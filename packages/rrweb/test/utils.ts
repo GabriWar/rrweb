@@ -20,7 +20,7 @@ export async function launchPuppeteer(
   options?: Parameters<(typeof puppeteer)['launch']>[0],
 ) {
   return await puppeteer.launch({
-    headless: process.env.PUPPETEER_HEADLESS ? 'new' : false,
+    headless: process.env.PUPPETEER_HEADLESS ? true : false,
     defaultViewport: {
       width: 1920,
       height: 1080,
@@ -214,7 +214,7 @@ export function stringifySnapshots(
           if (pluginPayload?.trace.length) {
             pluginPayload.trace = pluginPayload.trace.map((trace) => {
               return trace.replace(
-                /^pptr:evaluate;.*?:(\d+:\d+)/,
+                /^pptr[:;].*?:(\d+:\d+)/,
                 '__puppeteer_evaluation_script__:$1',
               );
             });
@@ -222,7 +222,7 @@ export function stringifySnapshots(
           if (pluginPayload?.payload.length) {
             pluginPayload.payload = pluginPayload.payload.map((payload) => {
               return payload.replace(
-                /pptr:evaluate;.*?:(\d+:\d+)/g,
+                /pptr[:;].*?:(\d+:\d+)/g,
                 '__puppeteer_evaluation_script__:$1',
               );
             });
@@ -369,7 +369,7 @@ export function replaceLast(str: string, find: string, replace: string) {
 }
 
 export async function assertDomSnapshot(page: puppeteer.Page) {
-  const cdp = await page.target().createCDPSession();
+  const cdp = await page.createCDPSession();
   const { data } = await cdp.send('Page.captureSnapshot', {
     format: 'mhtml',
   });
@@ -767,6 +767,10 @@ export const polyfillWebGLGlobals = () => {
   }
   global.WebGL2RenderingContext = WebGL2RenderingContext as any;
 };
+
+export function waitForTimeout(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 export async function waitForRAF(
   pageOrFrame: puppeteer.Page | puppeteer.Frame,

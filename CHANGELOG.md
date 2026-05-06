@@ -1,5 +1,46 @@
 # Changelog
 
+## 2.42.0
+
+### Breaking Changes 🛠
+
+- (rrvideo) Remove `rrvideo` package by @chargome in [#276](https://github.com/getsentry/rrweb/pull/276)
+
+### Bug Fixes 🐛
+
+#### Deps
+
+- Bump size-limit to 11.2 and resolve tmp vulnerability by @logaretm in [#293](https://github.com/getsentry/rrweb/pull/293)
+- Bump vitest and vite-plugin-web-extension to clear vite alert by @logaretm in [#291](https://github.com/getsentry/rrweb/pull/291)
+- Refresh lockfile to patch postcss and minimatch 3.x by @logaretm in [#290](https://github.com/getsentry/rrweb/pull/290)
+- Update vite and transitive deps by @logaretm in [#287](https://github.com/getsentry/rrweb/pull/287)
+- Refresh lockfile pins for vulnerable transitive deps by @chargome in [#285](https://github.com/getsentry/rrweb/pull/285)
+- Bump markdownlint-cli from ^0.31.1 to ^0.48.0 by @chargome in [#284](https://github.com/getsentry/rrweb/pull/284)
+- Bump concurrently from ^7.1.0 to ^9.0.0 by @chargome in [#281](https://github.com/getsentry/rrweb/pull/281)
+
+#### Other
+
+- (rrweb-snapshot) Rewrite vulnerable regexes flagged by CodeQL by @logaretm in [#289](https://github.com/getsentry/rrweb/pull/289)
+- (rrweb-worker) Bump @rollup/plugin-terser to ^1.0.0 by @chargome in [#283](https://github.com/getsentry/rrweb/pull/283)
+- (security) Vulnerabilities in GHA workflows by @billyvg in [#270](https://github.com/getsentry/rrweb/pull/270)
+- (web-extension) Bump react-router-dom and nanoid by @chargome in [#282](https://github.com/getsentry/rrweb/pull/282)
+- Use CSS Declaration `replaceSync` to parse styles to avoid CSP violations by @logaretm in [#286](https://github.com/getsentry/rrweb/pull/286)
+- Wrap iframe contentWindow access in try-catch by @andreiborza in [#275](https://github.com/getsentry/rrweb/pull/275)
+
+### Documentation 📚
+
+- Add AGENTS.md and symlink CLAUDE.md by @chargome in [#271](https://github.com/getsentry/rrweb/pull/271)
+
+### Internal Changes 🔧
+
+- (build) Bump vite 5→6, vitest 1→2, vite-plugin-dts 3→4 by @chargome in [#273](https://github.com/getsentry/rrweb/pull/273)
+- (rrweb) Replace fast-mhtml with inline MHTML parser by @chargome in [#274](https://github.com/getsentry/rrweb/pull/274)
+- (rrweb-player) Migrate to Svelte 5 and bump deps to resolve security alerts by @chargome in [#280](https://github.com/getsentry/rrweb/pull/280)
+- Declare least-privilege permissions on workflow jobs by @logaretm in [#288](https://github.com/getsentry/rrweb/pull/288)
+- Bump Puppeteer to v24 by @chargome in [#278](https://github.com/getsentry/rrweb/pull/278)
+- Replace vendored yarn with volta-managed yarn `1.22.22` by @chargome in [#277](https://github.com/getsentry/rrweb/pull/277)
+- Replace lerna with lightweight versioning script by @chargome in [#272](https://github.com/getsentry/rrweb/pull/272)
+
 ## 2.41.0
 
 ### New Features ✨

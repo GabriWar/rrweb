@@ -1,8 +1,5 @@
-import {
-  NodeType as RRNodeType,
-  Mirror as NodeMirror,
-  elementNode,
-} from '@sentry-internal/rrweb-snapshot';
+import type { Mirror as NodeMirror } from 'rrweb-snapshot';
+import { NodeType as RRNodeType, type elementNode } from '@rrweb/types';
 import type {
   canvasMutationData,
   canvasEventWithTime,
@@ -10,7 +7,7 @@ import type {
   scrollData,
   styleDeclarationData,
   styleSheetRuleData,
-} from '@sentry-internal/rrweb-types';
+} from '@rrweb/types';
 import type {
   IRRCDATASection,
   IRRComment,

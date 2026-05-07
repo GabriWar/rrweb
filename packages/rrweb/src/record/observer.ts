@@ -1,5 +1,4 @@
 import {
-  type MaskInputOptions,
   maskInputValue,
   Mirror,
   getInputType,
@@ -32,17 +31,10 @@ import {
   MediaInteractions,
 } from '@rrweb/types';
 import type {
-  mutationCallBack,
-  mousemoveCallBack,
   mousePosition,
-  mouseInteractionCallBack,
   listenerHandler,
   inputValue,
   hookResetter,
-  Arguments,
-  mediaInteractionCallback,
-  canvasMutationCallback,
-  fontCallback,
   fontParam,
   IWindow,
   SelectionRange,
@@ -591,7 +583,7 @@ type GroupingCSSRuleTypes =
 
 function getNestedCSSRulePositions(rule: CSSRule): number[] {
   const positions: number[] = [];
-  function recurse(childRule: CSSRule, pos: number[]) {
+  function recurse(childRule: CSSRule, pos: number[]): number[] {
     if (
       (hasNestedCSSRule('CSSGroupingRule') &&
         childRule.parentRule instanceof CSSGroupingRule) ||

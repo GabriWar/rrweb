@@ -610,10 +610,12 @@ export default class MutationBuffer {
       (cn) => dom.textContent(cn) || '',
     ).join('');
     item.attributes.value = maskInputValue({
+      isMasked: shouldMaskInput({
+        type: getInputType(textarea),
+        tagName: textarea.tagName.toUpperCase() as Uppercase<string>,
+        maskInputOptions: this.maskInputOptions,
+      }),
       element: textarea,
-      maskInputOptions: this.maskInputOptions,
-      tagName: textarea.tagName,
-      type: getInputType(textarea),
       value,
       maskInputFn: this.maskInputFn,
     });

@@ -31,6 +31,7 @@ import {
   toLowerCase,
   extractFileExtension,
   absolutifyURLs,
+  extractOrigin,
   markCssSplits,
   toUpperCase,
   shouldMaskInput,
@@ -468,13 +469,6 @@ export function needMaskingText(
         return true;
       }
     }
-    if (typeof maskTextClass === 'string') {
-      if (checkAncestors) {
-        if (el.closest(`.${maskTextClass}`)) return true;
-      } else {
-        if (el.classList.contains(maskTextClass)) return true;
-      }
-    }
 
     let maskDistance = -1;
     let unmaskDistance = -1;
@@ -613,7 +607,7 @@ function serializeNode(
     mirror: Mirror;
     blockClass: string | RegExp;
     blockSelector: string | null;
-    needsMask: boolean;
+    needsMask?: boolean;
     unblockSelector: string | null;
     maskAllText: boolean;
     maskAttributeFn: MaskAttributeFn | undefined;
@@ -749,7 +743,7 @@ function serializeTextNode(
   n: Text,
   options: {
     doc: Document;
-    needsMask: boolean;
+    needsMask?: boolean;
     maskAllText: boolean;
     maskTextClass: string | RegExp;
     unmaskTextClass: string | RegExp | null;
@@ -763,7 +757,6 @@ function serializeTextNode(
   },
 ): serializedNode {
   const {
-    needsMask,
     maskAllText,
     maskTextClass,
     unmaskTextClass,
@@ -1371,17 +1364,6 @@ export function serializeNodeWithId(
     ignoreCSSAttributes,
   } = options;
   let { preserveWhiteSpace = true } = options;
-
-  if (!needsMask) {
-    // perf: if needsMask = true, children won't also need to check
-    const checkAncestors = needsMask === undefined; // if false, we've already checked ancestors
-    needsMask = needMaskingText(
-      n as Element,
-      maskTextClass,
-      maskTextSelector,
-      checkAncestors,
-    );
-  }
 
   const _serializedNode = serializeNode(n, {
     doc,

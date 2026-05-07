@@ -51,11 +51,12 @@
     "vitest": "^3.2.4"
   },
   "dependencies": {
-    "rrdom": "2.42.0",
-    "rrweb-snapshot": "2.42.0",
+    "@rrweb/types": "2.42.0",
     "cssom": "^0.5.0",
     "cssstyle": "^2.3.0",
-    "nwsapi": "2.2.0"
+    "nwsapi": "2.2.0",
+    "rrdom": "2.42.0",
+    "rrweb-snapshot": "2.42.0"
   },
   "browserslist": [
     "supports es6-class"

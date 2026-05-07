@@ -431,7 +431,6 @@ function record<T = eventWithTime>(
       maskAttributeFn,
       maskInputFn,
       maskTextFn,
-      maskInputFn,
       slimDOM: slimDOMOptions,
       dataURLOptions,
       recordCanvas,

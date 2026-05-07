@@ -1,8 +1,8 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
-  import { Replayer } from '@sentry-internal/rrweb';
-  import { unpack } from '@sentry-internal/rrweb-packer';
-  import type { eventWithTime } from '@sentry-internal/rrweb-types';
+  import { Replayer } from 'rrweb';
+  import { unpack } from '@rrweb/packer';
+  import type { eventWithTime } from '@rrweb/types';
   import {
     inlineCss,
     openFullscreen,
@@ -229,7 +229,7 @@
 
 <style>
   :global {
-    @import '@sentry-internal/rrweb/dist/style.css';
+    @import 'rrweb/dist/style.css';
 
     .rr-player {
       position: relative;

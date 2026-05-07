@@ -11,7 +11,7 @@ import {
   EventType,
   type Emitter,
   IncrementalSource,
-} from '@sentry-internal/rrweb-types';
+} from '@rrweb/types';
 import { Timer, addDelay } from './timer';
 
 export type PlayerContext = {

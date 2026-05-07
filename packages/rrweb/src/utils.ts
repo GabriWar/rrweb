@@ -14,7 +14,6 @@ import type { Mirror, SlimDOMOptions } from 'rrweb-snapshot';
 import {
   isShadowRoot,
   IGNORED_NODE,
-  classMatchesRegex,
   createMatchPredicate,
   distanceToMatch,
 } from 'rrweb-snapshot';

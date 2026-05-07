@@ -6,7 +6,7 @@
   },
   "keywords": [
     "rrweb",
-    "rrweb-types"
+    "types"
   ],
   "scripts": {
     "dev": "vite build --watch",
@@ -27,8 +27,8 @@
   },
   "license": "MIT",
   "type": "module",
-  "main": "./dist/rrweb-types.umd.cjs",
-  "module": "./dist/rrweb-types.js",
+  "main": "./dist/types.umd.cjs",
+  "module": "./dist/types.js",
   "typings": "dist/index.d.ts",
   "typesVersions": {
     "<3.9": {
@@ -41,11 +41,11 @@
     ".": {
       "import": {
         "types": "./dist/index.d.ts",
-        "default": "./dist/rrweb-types.js"
+        "default": "./dist/types.js"
       },
       "require": {
         "types": "./dist/index.d.cts",
-        "default": "./dist/rrweb-types.umd.cjs"
+        "default": "./dist/types.umd.cjs"
       }
     }
   },
@@ -59,7 +59,6 @@
     "vite-plugin-dts": "^4.5.4"
   },
   "dependencies": {
-    "rrweb-snapshot": "2.42.0",
     "@types/css-font-loading-module": "0.0.7"
   },
   "browserslist": [

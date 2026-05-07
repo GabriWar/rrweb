@@ -1,12 +1,12 @@
+import { createMirror as createNodeMirror } from 'rrweb-snapshot';
+import type { Mirror as NodeMirror } from 'rrweb-snapshot';
 import {
   NodeType as RRNodeType,
-  createMirror as createNodeMirror,
-} from '@sentry-internal/rrweb-snapshot';
+} from '@rrweb/types';
 import type {
-  Mirror as NodeMirror,
   IMirror,
   serializedNodeWithId,
-} from '@sentry-internal/rrweb-snapshot';
+} from '@rrweb/types';
 import type {
   canvasMutationData,
   canvasEventWithTime,
@@ -14,7 +14,7 @@ import type {
   scrollData,
   styleSheetRuleData,
   styleDeclarationData,
-} from '@sentry-internal/rrweb-types';
+} from '@rrweb/types';
 import {
   BaseRRNode as RRNode,
   BaseRRCDATASection,

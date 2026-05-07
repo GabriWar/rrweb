@@ -1,3 +1,3 @@
-import { record } from '@sentry-internal/rrweb';
+import { record } from 'rrweb';
 
 export { record };

@@ -69,5 +69,10 @@
     "vite": "^6.4.2",
     "vite-plugin-dts": "^4.5.4",
     "vitest": "^3.2.4"
+  },
+  "dependencies": {
+    "@rrweb/types": "2.42.0",
+    "@rrweb/utils": "2.42.0",
+    "postcss": "^8.4.38"
   }
 }

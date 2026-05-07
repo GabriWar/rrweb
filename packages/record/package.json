@@ -55,8 +55,9 @@
     "vitest": "^3.2.4"
   },
   "dependencies": {
-    "rrweb": "2.42.0",
-    "@rrweb/types": "2.42.0"
+    "@rrweb/types": "2.42.0",
+    "@rrweb/utils": "2.42.0",
+    "rrweb": "2.42.0"
   },
   "browserslist": [
     "supports es6-class"

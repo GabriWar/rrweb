@@ -1,6 +1,6 @@
 import {
   rebuild,
-  adaptCssForReplay,
+  addHoverClass,
   buildNodeWithSN,
   type BuildCache,
   createCache,
@@ -45,6 +45,7 @@ import {
   EventType,
   IncrementalSource,
   MouseInteractions,
+  MediaInteractions,
   ReplayerEvents,
 } from '@rrweb/types';
 import type {
@@ -58,7 +59,6 @@ import type {
   incrementalData,
   Handler,
   Emitter,
-  MediaInteractions,
   metaEvent,
   mutationData,
   scrollData,
@@ -193,6 +193,8 @@ export class Replayer {
 
   // Used to track StyleSheetObjects adopted on multiple document hosts.
   private styleMirror: StyleSheetMirror = new StyleSheetMirror();
+
+  private mediaManager: MediaManager;
 
   private firstFullSnapshot: eventWithTime | true | null = null;
 
@@ -436,6 +438,13 @@ export class Replayer {
       this.emitter.emit(ReplayerEvents.StateChange, {
         speed: state,
       });
+    });
+    this.mediaManager = new MediaManager({
+      warn: this.warn.bind(this),
+      service: this.service,
+      speedService: this.speedService,
+      emitter: this.emitter,
+      getCurrentTime: this.getCurrentTime.bind(this),
     });
 
     // rebuild first full snapshot as the poster of the player
@@ -1952,7 +1961,7 @@ export class Replayer {
       const parentEl = target.parentElement as Element | RRElement;
       if (mutation.value && parentEl && parentEl.tagName === 'STYLE') {
         // assumes hackCss: true (which isn't currently configurable from rrweb)
-        target.textContent = adaptCssForReplay(mutation.value, this.cache);
+        target.textContent = addHoverClass(mutation.value, this.cache);
       } else {
         target.textContent = mutation.value;
       }

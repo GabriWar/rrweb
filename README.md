@@ -10,12 +10,12 @@ This repo is a fork of [rrweb](https://github.com/rrweb-io/rrweb). The purpose i
 
 From this monorepo, Sentry maintains and publishes the following NPM packages:
 
-- `@sentry-internal/rrweb` (corresponds to the [original `rrweb` package](https://www.npmjs.com/package/rrweb))
+- `rrweb` (corresponds to the [original `rrweb` package](https://www.npmjs.com/package/rrweb))
 - `@sentry-internal/rrdom` (corresponds to the [original `rrdom` package](https://www.npmjs.com/package/rrdom))
-- `@sentry-internal/rrweb-player` (corresponds to the [original `rrweb-player` package](https://www.npmjs.com/package/rrweb-player))
-- `@sentry-internal/rrweb-snapshot` (corresponds to the [original `rrweb-snapshot` package](https://www.npmjs.com/package/rrweb-snapshot))
-- `@sentry-internal/rrweb-types` (corresponds to the [original `@rrweb/types` package](https://www.npmjs.com/package/@rrweb/types))
-- `@sentry-internal/rrweb-worker` (new package)
+- `rrweb-player` (corresponds to the [original `rrweb-player` package](https://www.npmjs.com/package/rrweb-player))
+- `rrweb-snapshot` (corresponds to the [original `rrweb-snapshot` package](https://www.npmjs.com/package/rrweb-snapshot))
+- `rrweb-types` (corresponds to the [original `@rrweb/types` package](https://www.npmjs.com/package/@rrweb/types))
+- `rrweb-worker` (new package)
 
 ## Major changes from upstream branch
 

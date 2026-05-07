@@ -461,7 +461,7 @@ export function extractFileExtension(
   return match?.[1] ?? null;
 }
 
-function extractOrigin(url: string): string {
+export function extractOrigin(url: string): string {
   let origin = '';
   if (url.indexOf('//') > -1) {
     origin = url.split('/').slice(0, 3).join('/');

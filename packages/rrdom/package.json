@@ -52,6 +52,7 @@
     "vite-plugin-dts": "^4.5.4"
   },
   "dependencies": {
+    "@rrweb/types": "2.42.0",
     "rrweb-snapshot": "2.42.0"
   }
 }

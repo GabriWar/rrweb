@@ -10,7 +10,7 @@ import {
   createMirror,
   Mirror as NodeMirror,
   serializedNodeWithId,
-} from '@sentry-internal/rrweb-snapshot';
+} from 'rrweb-snapshot';
 import {
   buildFromDom,
   getDefaultSN,
@@ -31,8 +31,8 @@ import type { IRRElement, IRRNode } from '../src/document';
 import type {
   canvasMutationData,
   styleSheetRuleData,
-} from '@sentry-internal/rrweb-types';
-import { EventType, IncrementalSource } from '@sentry-internal/rrweb-types';
+} from '@rrweb/types';
+import { EventType, IncrementalSource } from '@rrweb/types';
 
 const elementSn = {
   type: RRNodeType.Element,

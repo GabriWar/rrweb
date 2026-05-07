@@ -577,6 +577,7 @@ export type mediaInteractionParam = {
   volume?: number;
   muted?: boolean;
   playbackRate?: number;
+  loop?: boolean;
 };
 
 export type mediaInteractionCallback = (p: mediaInteractionParam) => void;

@@ -1,7 +1,7 @@
 /**
  * @jest-environment jsdom
  */
-import { NodeType as RRNodeType } from '@rrweb/types';
+import { NodeType as RRNodeType } from '@sentry-internal/rrweb-snapshot';
 import {
   BaseRRDocument,
   BaseRRDocumentType,
@@ -1063,7 +1063,6 @@ describe('Basic RRDocument implementation', () => {
       expect(node.paused).toBeUndefined();
       expect(node.muted).toBeUndefined();
       expect(node.playbackRate).toBeUndefined();
-      expect(node.loop).toBeUndefined();
       expect(node.play).toBeDefined();
       expect(node.pause).toBeDefined();
       expect(node.toString()).toEqual('VIDEO ');

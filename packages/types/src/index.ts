@@ -89,6 +89,7 @@ export type mousemoveData = {
     | IncrementalSource.TouchMove
     | IncrementalSource.Drag;
   positions: mousePosition[];
+  pointerId?: number;
 };
 
 export type mouseInteractionData = {
@@ -184,6 +185,7 @@ export type canvasEventWithTime = eventWithTime & {
 export type blockClass = string | RegExp;
 
 export type maskTextClass = string | RegExp;
+export type unmaskTextClass = string | RegExp | null;
 
 export type SamplingStrategy = Partial<{
   /**
@@ -419,6 +421,7 @@ type mouseInteractionParam = {
   x?: number;
   y?: number;
   pointerType?: PointerTypes;
+  pointerId?: number;
 };
 
 export type mouseInteractionCallBack = (d: mouseInteractionParam) => void;
@@ -515,6 +518,7 @@ export type ImageBitmapDataURLWorkerParams = {
   width: number;
   height: number;
   dataURLOptions: DataURLOptions;
+  maxCanvasSize?: [number, number];
 };
 
 export type ImageBitmapDataURLWorkerResponse =
@@ -572,7 +576,6 @@ export type mediaInteractionParam = {
   currentTime?: number;
   volume?: number;
   muted?: boolean;
-  loop?: boolean;
   playbackRate?: number;
 };
 
@@ -660,9 +663,6 @@ export type Arguments<T> = T extends (...payload: infer U) => unknown
 export enum ReplayerEvents {
   Start = 'start',
   Pause = 'pause',
-  /**
-   * @deprecated use Play instead
-   */
   Resume = 'resume',
   Resize = 'resize',
   Finish = 'finish',

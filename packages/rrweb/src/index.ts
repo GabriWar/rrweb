@@ -2,11 +2,12 @@ import record from './record';
 import {
   Replayer,
   type playerConfig,
+  type PlayerState,
+  type SpeedState,
   type PlayerMachineState,
   type SpeedMachineState,
 } from './replay';
 import canvasMutation from './replay/canvas';
-import { _mirror } from './utils';
 import * as utils from './utils';
 
 export {
@@ -14,28 +15,34 @@ export {
   IncrementalSource,
   MouseInteractions,
   ReplayerEvents,
-  type eventWithTime,
 } from '@rrweb/types';
 
 // exports style.css from replay
 import './replay/styles/style.css';
 
 export type { recordOptions, ReplayPlugin } from './types';
+export type {
+  canvasMutationParam,
+  canvasMutationData,
+  eventWithTime,
+  fullSnapshotEvent,
+  incrementalSnapshotEvent,
+  inputData,
+} from '@rrweb/types';
 
-const { addCustomEvent } = record;
-const { freezePage } = record;
-const { takeFullSnapshot } = record;
+export { deserializeArg } from './replay/canvas/deserialize-args';
+export { addCustomEvent, freezePage, takeFullSnapshot } from './record';
+export type { CanvasManagerConstructorOptions } from './record';
+export { CanvasManager } from './record/observers/canvas/canvas-manager';
 
 export {
   record,
-  addCustomEvent,
-  freezePage,
-  takeFullSnapshot,
   Replayer,
   type playerConfig,
+  type PlayerState,
+  type SpeedState,
   type PlayerMachineState,
   type SpeedMachineState,
   canvasMutation,
-  _mirror as mirror,
   utils,
 };

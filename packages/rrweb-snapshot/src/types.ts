@@ -21,6 +21,32 @@ export type DialogAttributes = {
   // rr_open_mode_index?: number;
 };
 
+export type mediaAttributes = {
+  rr_mediaState: 'played' | 'paused';
+  rr_mediaCurrentTime: number;
+  /**
+   * for backwards compatibility this is optional but should always be set
+   */
+  rr_mediaPlaybackRate?: number;
+  /**
+   * for backwards compatibility this is optional but should always be set
+   */
+  rr_mediaMuted?: boolean;
+  /**
+   * for backwards compatibility this is optional but should always be set
+   */
+  rr_mediaLoop?: boolean;
+  /**
+   * for backwards compatibility this is optional but should always be set
+   */
+  rr_mediaVolume?: number;
+};
+
+// @deprecated
+export interface INode extends Node {
+  __sn: serializedNodeWithId;
+}
+
 export interface ICanvas extends HTMLCanvasElement {
   __context: string;
 }
@@ -46,7 +72,9 @@ export type MaskInputOptions = Partial<{
   // unify textarea and select element with text input
   textarea: boolean;
   select: boolean;
-  password: boolean;
+  // password is _always_ masked, can't opt out of this
+  radio: boolean;
+  checkbox: boolean;
 }>;
 
 export type SlimDOMOptions = Partial<{
@@ -68,6 +96,11 @@ export type SlimDOMOptions = Partial<{
 
 export type MaskTextFn = (text: string, element: HTMLElement | null) => string;
 export type MaskInputFn = (text: string, element: HTMLElement) => string;
+export type MaskAttributeFn = (
+  attributeName: string,
+  attributeValue: string,
+  element: HTMLElement,
+) => string;
 
 export type KeepIframeSrcFn = (src: string) => boolean;
 

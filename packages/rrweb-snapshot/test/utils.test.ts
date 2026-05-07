@@ -2,15 +2,14 @@
  * @vitest-environment jsdom
  */
 import { describe, it, test, expect } from 'vitest';
+import { NodeType, serializedNode } from '../src/types';
 import {
-  escapeImportStatement,
   extractFileExtension,
-  fixSafariColons,
   isNodeMetaEqual,
-  stringifyStylesheet,
+  getIFrameContentDocument,
+  getIFrameContentWindow,
 } from '../src/utils';
-import { NodeType } from '@rrweb/types';
-import type { serializedNode, serializedNodeWithId } from '@rrweb/types';
+import type { serializedNodeWithId } from '@sentry-internal/rrweb-snapshot';
 
 describe('utils', () => {
   describe('isNodeMetaEqual()', () => {
@@ -206,124 +205,55 @@ describe('utils', () => {
     });
   });
 
-  describe('escapeImportStatement', () => {
-    it('parses imports with quotes correctly', () => {
-      const out1 = escapeImportStatement({
-        cssText: `@import url("/foo.css;900;800"");`,
-        href: '/foo.css;900;800"',
-        media: {
-          length: 0,
-        },
-        layerName: null,
-        supportsText: null,
-      } as unknown as CSSImportRule);
-      expect(out1).toEqual(`@import url("/foo.css;900;800\\"");`);
-
-      const out2 = escapeImportStatement({
-        cssText: `@import url("/foo.css;900;800"") supports(display: flex);`,
-        href: '/foo.css;900;800"',
-        media: {
-          length: 0,
-        },
-        layerName: null,
-        supportsText: 'display: flex',
-      } as unknown as CSSImportRule);
-      expect(out2).toEqual(
-        `@import url("/foo.css;900;800\\"") supports(display: flex);`,
-      );
-
-      const out3 = escapeImportStatement({
-        cssText: `@import url("/foo.css;900;800"");`,
-        href: '/foo.css;900;800"',
-        media: {
-          length: 1,
-          mediaText: 'print, screen',
-        },
-        layerName: null,
-        supportsText: null,
-      } as unknown as CSSImportRule);
-      expect(out3).toEqual(`@import url("/foo.css;900;800\\"") print, screen;`);
-
-      const out4 = escapeImportStatement({
-        cssText: `@import url("/foo.css;900;800"") layer(layer-1);`,
-        href: '/foo.css;900;800"',
-        media: {
-          length: 0,
-        },
-        layerName: 'layer-1',
-        supportsText: null,
-      } as unknown as CSSImportRule);
-      expect(out4).toEqual(
-        `@import url("/foo.css;900;800\\"") layer(layer-1);`,
-      );
-
-      const out5 = escapeImportStatement({
-        cssText: `@import url("/foo.css;900;800"") layer;`,
-        href: '/foo.css;900;800"',
-        media: {
-          length: 0,
-        },
-        layerName: '',
-        supportsText: null,
-      } as unknown as CSSImportRule);
-      expect(out5).toEqual(`@import url("/foo.css;900;800\\"") layer;`);
+  describe('getIFrameContentDocument', () => {
+    it('should return contentDocument for same-origin iframe', () => {
+      const iframe = document.createElement('iframe');
+      document.body.appendChild(iframe);
+      const doc = getIFrameContentDocument(iframe);
+      expect(doc).toBe(iframe.contentDocument);
+      document.body.removeChild(iframe);
     });
-  });
-  describe('fixSafariColons', () => {
-    it('parses : in attribute selectors correctly', () => {
-      const out1 = fixSafariColons('[data-foo] { color: red; }');
-      expect(out1).toEqual('[data-foo] { color: red; }');
 
-      const out2 = fixSafariColons('[data-foo:other] { color: red; }');
-      expect(out2).toEqual('[data-foo\\:other] { color: red; }');
+    it('should return undefined when accessing contentDocument throws', () => {
+      const iframe = {
+        get contentDocument(): Document {
+          throw new DOMException('Blocked', 'SecurityError');
+        },
+      } as HTMLIFrameElement;
+      const doc = getIFrameContentDocument(iframe);
+      expect(doc).toBeUndefined();
+    });
 
-      const out3 = fixSafariColons('[data-aa\\:other] { color: red; }');
-      expect(out3).toEqual('[data-aa\\:other] { color: red; }');
+    it('should return undefined for undefined input', () => {
+      const doc = getIFrameContentDocument(undefined);
+      expect(doc).toBeUndefined();
     });
   });
 
-  describe('stringifyStylesheet', () => {
-    it('returns null if rules are missing', () => {
-      const mockSheet = {
-        rules: null,
-        cssRules: null,
-      } as unknown as CSSStyleSheet;
-      expect(stringifyStylesheet(mockSheet)).toBeNull();
+  describe('getIFrameContentWindow', () => {
+    it('should return contentWindow for same-origin iframe', () => {
+      const iframe = document.createElement('iframe');
+      document.body.appendChild(iframe);
+      const win = getIFrameContentWindow(iframe);
+      expect(win).toBe(iframe.contentWindow);
+      document.body.removeChild(iframe);
     });
 
-    it('stringifies rules using .cssRules if .rules is missing', () => {
-      const mockRule1 = { cssText: 'div { margin: 0; }' } as CSSRule;
-      const mockSheet = {
-        cssRules: [mockRule1],
-        href: 'https://example.com/main.css',
-      } as unknown as CSSStyleSheet;
-      expect(stringifyStylesheet(mockSheet)).toBe('div { margin: 0; }');
+    it('should return undefined when accessing contentWindow throws', () => {
+      // Simulate iOS 18.5 Safari WebView behavior where accessing
+      // contentWindow on cross-origin iframes throws SecurityError
+      const iframe = {
+        get contentWindow(): Window {
+          throw new DOMException('Blocked', 'SecurityError');
+        },
+      } as HTMLIFrameElement;
+      const win = getIFrameContentWindow(iframe);
+      expect(win).toBeUndefined();
     });
 
-    it('uses ownerNode.baseURI for inline styles', () => {
-      const mockFontFaceRule = {
-        cssText: `
-          @font-face {
-            font-family: 'MockFont';
-            src: url('../fonts/mockfont.woff2') format('woff2');
-            font-weight: normal;
-            font-style: normal;
-          }
-        `,
-      } as CSSRule;
-      const mockOwnerNode = {
-        baseURI: 'https://example.com/fonts/',
-      } as unknown as Node;
-      const mockSheet = {
-        cssRules: [mockFontFaceRule],
-        href: null,
-        ownerNode: mockOwnerNode,
-      } as unknown as CSSStyleSheet;
-      expect(
-        stringifyStylesheet(mockSheet)?.replace(/\s+/g, ' ').trim(),
-      ).toEqual(
-        "@font-face { font-family: 'MockFont'; src: url('https://example.com/fonts/mockfont.woff2') format('woff2'); font-weight: normal; font-style: normal; }",
-      );
+    it('should return undefined for undefined input', () => {
+      const win = getIFrameContentWindow(undefined);
+      expect(win).toBeUndefined();
     });
   });
 });

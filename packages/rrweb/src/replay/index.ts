@@ -15,6 +15,8 @@ import {
   buildFromDom,
   diff,
   getDefaultSN,
+  getIFrameContentDocument,
+  getIFrameContentWindow,
 } from 'rrdom';
 import type {
   RRNode,
@@ -32,6 +34,8 @@ import { Timer } from './timer';
 import {
   createPlayerService,
   createSpeedService,
+  type PlayerState,
+  type SpeedState,
   type PlayerMachineState,
   type SpeedMachineState,
 } from './machine';
@@ -54,6 +58,7 @@ import type {
   incrementalData,
   Handler,
   Emitter,
+  MediaInteractions,
   metaEvent,
   mutationData,
   scrollData,
@@ -70,6 +75,8 @@ import type {
   styleDeclarationData,
   adoptedStyleSheetData,
   serializedElementNodeWithId,
+  mouseInteractionData,
+  mousemoveData,
 } from '@rrweb/types';
 import {
   polyfill,
@@ -83,6 +90,8 @@ import {
   getPositionsAndIndex,
   uniqueTextMutations,
   StyleSheetMirror,
+  clearTimeout,
+  setTimeout,
 } from '../utils';
 import getInjectStyleRules from './styles/inject-style';
 import './styles/style.css';
@@ -98,6 +107,29 @@ const mitt = mittProxy.default || mittProxy;
 
 const REPLAY_CONSOLE_PREFIX = '[replayer]';
 
+export function getEventIndex(
+  events: eventWithTime[],
+  eventTime: number,
+): number {
+  // Use binary search (O(log n)) to find the index of the event at or before the given time
+  let result = -1;
+  if (events.length === 0) {
+    return result;
+  }
+  let left = 0,
+    right = events.length - 1;
+  while (left <= right) {
+    const mid = Math.floor((left + right) / 2);
+    if (events[mid].timestamp <= eventTime) {
+      result = mid;
+      left = mid + 1;
+    } else {
+      right = mid - 1;
+    }
+  }
+  return result;
+}
+
 const defaultMouseTailConfig = {
   duration: 500,
   lineCap: 'round',
@@ -105,13 +137,28 @@ const defaultMouseTailConfig = {
   strokeStyle: 'red',
 } as const;
 
-function indicatesTouchDevice(e: eventWithTime) {
+type incrementalSnapshotEventWithTime = incrementalSnapshotEvent & {
+  timestamp: number;
+  delay?: number;
+};
+
+function indicatesTouchDevice(
+  e: eventWithTime,
+): e is incrementalSnapshotEventWithTime {
   return (
     e.type == EventType.IncrementalSnapshot &&
     (e.data.source == IncrementalSource.TouchMove ||
       (e.data.source == IncrementalSource.MouseInteraction &&
         e.data.type == MouseInteractions.TouchStart))
   );
+}
+
+function getPointerId(
+  d: incrementalData | mousemoveData | mouseInteractionData,
+): number {
+  const pointerId =
+    'pointerId' in d && typeof d.pointerId === 'number' ? d.pointerId : -1;
+  return pointerId;
 }
 
 export class Replayer {
@@ -130,10 +177,6 @@ export class Replayer {
   public usingVirtualDom = false;
   public virtualDom: RRDocument = new RRDocument();
 
-  private mouse: HTMLDivElement;
-  private mouseTail: HTMLCanvasElement | null = null;
-  private tailPositions: Array<{ x: number; y: number }> = [];
-
   private emitter: Emitter = mitt();
 
   private nextUserInteractionEvent: eventWithTime | null;
@@ -151,15 +194,21 @@ export class Replayer {
   // Used to track StyleSheetObjects adopted on multiple document hosts.
   private styleMirror: StyleSheetMirror = new StyleSheetMirror();
 
-  // Used to track video & audio elements, and keep them in sync with general playback.
-  private mediaManager: MediaManager;
-
   private firstFullSnapshot: eventWithTime | true | null = null;
 
   private newDocumentQueue: addedNodeMutation[] = [];
 
-  private mousePos: mouseMovePos | null = null;
-  private touchActive: boolean | null = null;
+  // Map of pointer ID to the unique vars used to show pointers and their movements
+  private pointers: Record<
+    number,
+    {
+      touchActive: boolean | null;
+      pointerEl: HTMLDivElement;
+      tailPositions: Array<{ x: number; y: number }>;
+      pointerPosition: mouseMovePos | null;
+      mouseTail: HTMLCanvasElement | null;
+    }
+  > = {};
   private lastMouseDownEvent: [Node, Event] | null = null;
 
   // Keep the rootNode of the last hovered element. So  when hovering a new element, we can remove the last hovered element's :hover style.
@@ -254,10 +303,11 @@ export class Replayer {
             }
           },
         };
-        if (this.iframe.contentDocument)
+        const iframeDoc = getIFrameContentDocument(this.iframe);
+        if (iframeDoc)
           try {
             diff(
-              this.iframe.contentDocument,
+              iframeDoc,
               this.virtualDom,
               replayerHandler,
               this.virtualDom.mirror,
@@ -303,23 +353,32 @@ export class Replayer {
         this.adoptedStyleSheets = [];
       }
 
-      if (this.mousePos) {
-        this.moveAndHover(
-          this.mousePos.x,
-          this.mousePos.y,
-          this.mousePos.id,
-          true,
-          this.mousePos.debugData,
-        );
-        this.mousePos = null;
-      }
+      for (const [
+        pointerId,
+        { pointerPosition, touchActive },
+      ] of Object.entries(this.pointers)) {
+        const id = parseInt(pointerId);
+        const pointer = this.pointers[id];
 
-      if (this.touchActive === true) {
-        this.mouse.classList.add('touch-active');
-      } else if (this.touchActive === false) {
-        this.mouse.classList.remove('touch-active');
+        if (pointerPosition) {
+          this.moveAndHover(
+            pointerPosition.x,
+            pointerPosition.y,
+            pointerPosition.id,
+            true,
+            pointerPosition.debugData,
+            id,
+          );
+          pointer.pointerPosition = null;
+        }
+
+        if (touchActive === true) {
+          pointer.pointerEl.classList.add('touch-active');
+        } else if (touchActive === false) {
+          pointer.pointerEl.classList.remove('touch-active');
+        }
+        pointer.touchActive = null;
       }
-      this.touchActive = null;
 
       if (this.lastMouseDownEvent) {
         const [target, event] = this.lastMouseDownEvent;
@@ -336,7 +395,6 @@ export class Replayer {
       this.firstFullSnapshot = null;
       this.mirror.reset();
       this.styleMirror.reset();
-      this.mediaManager.reset();
     });
 
     const timer = new Timer([], {
@@ -379,13 +437,6 @@ export class Replayer {
         speed: state,
       });
     });
-    this.mediaManager = new MediaManager({
-      warn: this.warn.bind(this),
-      service: this.service,
-      speedService: this.speedService,
-      emitter: this.emitter,
-      getCurrentTime: this.getCurrentTime.bind(this),
-    });
 
     // rebuild first full snapshot as the poster of the player
     // maybe we can cache it for performance optimization
@@ -420,9 +471,32 @@ export class Replayer {
         );
       }, 1);
     }
-    if (this.service.state.context.events.find(indicatesTouchDevice)) {
-      this.mouse.classList.add('touch-device');
+  }
+
+  private createPointer(pointerId: number, event: eventWithTime) {
+    const mouseTail = document.createElement('canvas');
+    mouseTail.classList.add('replayer-mouse-tail');
+    mouseTail.width = Number.parseFloat(this.iframe.width);
+    mouseTail.height = Number.parseFloat(this.iframe.height);
+    this.wrapper.insertBefore(mouseTail, this.iframe);
+
+    mouseTail.style.display =
+      this.config.mouseTail === false ? 'none' : 'inherit';
+
+    const newMouse = document.createElement('div');
+    newMouse.classList.add('replayer-mouse');
+    this.pointers[pointerId] = {
+      touchActive: null,
+      pointerEl: newMouse,
+      tailPositions: [],
+      pointerPosition: null,
+      mouseTail,
+    };
+
+    if (indicatesTouchDevice(event)) {
+      newMouse.classList.add('touch-device');
     }
+    this.wrapper.appendChild(newMouse);
   }
 
   public on(event: string, handler: Handler) {
@@ -436,6 +510,7 @@ export class Replayer {
   }
 
   public setConfig(config: Partial<playerConfig>) {
+    const previousSkipInactive = this.config.skipInactive;
     Object.keys(config).forEach((key) => {
       const newConfigValue = config[key as keyof playerConfig];
       (this.config as Record<keyof playerConfig, typeof newConfigValue>)[
@@ -444,6 +519,11 @@ export class Replayer {
     });
     if (!this.config.skipInactive) {
       this.backToNormal();
+    } else if (
+      previousSkipInactive === false &&
+      this.config.skipInactive === true
+    ) {
+      this.reevaluateFastForward();
     }
     if (typeof config.speed !== 'undefined') {
       this.speedService.send({
@@ -455,18 +535,22 @@ export class Replayer {
     }
     if (typeof config.mouseTail !== 'undefined') {
       if (config.mouseTail === false) {
-        if (this.mouseTail) {
-          this.mouseTail.style.display = 'none';
+        for (const { mouseTail } of Object.values(this.pointers)) {
+          if (mouseTail) {
+            mouseTail.style.display = 'none';
+          }
         }
       } else {
-        if (!this.mouseTail) {
-          this.mouseTail = document.createElement('canvas');
-          this.mouseTail.width = Number.parseFloat(this.iframe.width);
-          this.mouseTail.height = Number.parseFloat(this.iframe.height);
-          this.mouseTail.classList.add('replayer-mouse-tail');
-          this.wrapper.insertBefore(this.mouseTail, this.iframe);
+        for (let { mouseTail } of Object.values(this.pointers)) {
+          if (!mouseTail) {
+            mouseTail = document.createElement('canvas');
+            mouseTail.width = Number.parseFloat(this.iframe.width);
+            mouseTail.height = Number.parseFloat(this.iframe.height);
+            mouseTail.classList.add('replayer-mouse-tail');
+            this.wrapper.insertBefore(mouseTail, this.iframe);
+          }
+          mouseTail.style.display = 'inherit';
         }
-        this.mouseTail.style.display = 'inherit';
       }
     }
   }
@@ -484,16 +568,10 @@ export class Replayer {
     };
   }
 
-  /**
-   * Get the actual time offset the player is at now compared to the first event.
-   */
   public getCurrentTime(): number {
     return this.timer.timeOffset + this.getTimeOffset();
   }
 
-  /**
-   * Get the time offset the player is at now compared to the first event, but without regard for the timer.
-   */
   public getTimeOffset(): number {
     const { baselineTime, events } = this.service.state.context;
     return baselineTime - events[0].timestamp;
@@ -513,16 +591,26 @@ export class Replayer {
    * @param timeOffset - number
    */
   public play(timeOffset = 0) {
+    if (
+      this.config.skipInactive &&
+      this.speedService.state.matches('skipping')
+    ) {
+      this.backToNormal();
+    }
     if (this.service.state.matches('paused')) {
       this.service.send({ type: 'PLAY', payload: { timeOffset } });
     } else {
       this.service.send({ type: 'PAUSE' });
       this.service.send({ type: 'PLAY', payload: { timeOffset } });
     }
-    this.iframe.contentDocument
+    const iframeDoc = getIFrameContentDocument(this.iframe);
+    iframeDoc
       ?.getElementsByTagName('html')[0]
       ?.classList.remove('rrweb-paused');
     this.emitter.emit(ReplayerEvents.Start);
+    if (this.config.skipInactive) {
+      this.reevaluateFastForward();
+    }
   }
 
   public pause(timeOffset?: number) {
@@ -533,9 +621,8 @@ export class Replayer {
       this.play(timeOffset);
       this.service.send({ type: 'PAUSE' });
     }
-    this.iframe.contentDocument
-      ?.getElementsByTagName('html')[0]
-      ?.classList.add('rrweb-paused');
+    const iframeDoc = getIFrameContentDocument(this.iframe);
+    iframeDoc?.getElementsByTagName('html')[0]?.classList.add('rrweb-paused');
     this.emitter.emit(ReplayerEvents.Pause);
   }
 
@@ -553,9 +640,6 @@ export class Replayer {
    */
   public destroy() {
     this.pause();
-    this.mirror.reset();
-    this.styleMirror.reset();
-    this.mediaManager.reset();
     this.config.root.removeChild(this.wrapper);
     this.emitter.emit(ReplayerEvents.Destroy);
   }
@@ -568,9 +652,7 @@ export class Replayer {
     const event = this.config.unpackFn
       ? this.config.unpackFn(rawEvent as string)
       : (rawEvent as eventWithTime);
-    if (indicatesTouchDevice(event)) {
-      this.mouse.classList.add('touch-device');
-    }
+
     void Promise.resolve().then(() =>
       this.service.send({ type: 'ADD_EVENT', payload: { event } }),
     );
@@ -594,21 +676,58 @@ export class Replayer {
     this.cache = createCache();
   }
 
+  private reevaluateFastForward(): void {
+    if (!this.config.skipInactive) {
+      return;
+    }
+
+    // Clear stale state
+    this.nextUserInteractionEvent = null;
+
+    // Get current time and convert to event-relative time
+    const events = this.service.state.context.events;
+    const firstEvent = events[0];
+    if (!firstEvent) {
+      return;
+    }
+    const currentEventTime = firstEvent.timestamp + this.getCurrentTime();
+
+    // Find current event index
+    const currentEventIndex = getEventIndex(events, currentEventTime);
+    if (currentEventIndex === -1) {
+      return;
+    }
+
+    // Find next user interaction event starting from the current event index
+    const currentEvent = events[currentEventIndex];
+    const threshold =
+      this.config.inactivePeriodThreshold *
+      this.speedService.state.context.timer.speed;
+    for (let i = currentEventIndex + 1; i < events.length; i++) {
+      const event = events[i];
+      if (this.isUserInteraction(event)) {
+        const gapTime = event.timestamp - currentEvent.timestamp;
+        // Fast forward if the gap time is greater than the threshold
+        if (gapTime > threshold) {
+          this.nextUserInteractionEvent = event;
+          const payload = {
+            speed: Math.min(
+              Math.round(gapTime / SKIP_TIME_INTERVAL),
+              this.config.maxSpeed,
+            ),
+          };
+          this.speedService.send({ type: 'FAST_FORWARD', payload });
+          this.emitter.emit(ReplayerEvents.SkipStart, payload);
+        }
+        break;
+      }
+    }
+  }
+
   private setupDom() {
     this.wrapper = document.createElement('div');
     this.wrapper.classList.add('replayer-wrapper');
     this.config.root.appendChild(this.wrapper);
-
-    this.mouse = document.createElement('div');
-    this.mouse.classList.add('replayer-mouse');
-    this.wrapper.appendChild(this.mouse);
-
-    if (this.config.mouseTail !== false) {
-      this.mouseTail = document.createElement('canvas');
-      this.mouseTail.classList.add('replayer-mouse-tail');
-      this.mouseTail.style.display = 'inherit';
-      this.wrapper.appendChild(this.mouseTail);
-    }
 
     this.iframe = document.createElement('iframe');
     const attributes = ['allow-same-origin'];
@@ -620,19 +739,21 @@ export class Replayer {
     this.iframe.setAttribute('sandbox', attributes.join(' '));
     this.disableInteract();
     this.wrapper.appendChild(this.iframe);
-    if (this.iframe.contentWindow && this.iframe.contentDocument) {
-      smoothscrollPolyfill(
-        this.iframe.contentWindow,
-        this.iframe.contentDocument,
-      );
-
-      polyfill(this.iframe.contentWindow as IWindow);
+    const iframeDoc = getIFrameContentDocument(this.iframe);
+    const iframeWindow = getIFrameContentWindow(this.iframe);
+    if (iframeWindow && iframeDoc) {
+      smoothscrollPolyfill(iframeWindow, iframeDoc);
+      polyfill(iframeWindow as IWindow);
     }
   }
 
   private handleResize = (dimension: viewportResizeDimension) => {
     this.iframe.style.display = 'inherit';
-    for (const el of [this.mouseTail, this.iframe]) {
+
+    for (const el of [
+      ...Object.values(this.pointers).flatMap((a) => a.mouseTail),
+      this.iframe,
+    ]) {
       if (!el) {
         continue;
       }
@@ -696,10 +817,9 @@ export class Replayer {
             // Timer (requestAnimationFrame) can be faster than setTimeout(..., 1)
             this.firstFullSnapshot = true;
           }
-          this.mediaManager.reset();
-          this.styleMirror.reset();
           this.rebuildFullSnapshot(event, isSync);
           this.iframe.contentWindow?.scrollTo(event.data.initialOffset);
+          this.styleMirror.reset();
         };
         break;
       case EventType.IncrementalSnapshot:
@@ -795,7 +915,8 @@ export class Replayer {
     event: fullSnapshotEvent & { timestamp: number },
     isSync = false,
   ) {
-    if (!this.iframe.contentDocument) {
+    const iframeDoc = getIFrameContentDocument(this.iframe);
+    if (!iframeDoc) {
       return this.warn('Looks like your replayer has been destroyed.');
     }
     if (Object.keys(this.legacy_missingNodeRetryMap).length) {
@@ -840,12 +961,12 @@ export class Replayer {
 
     this.mirror.reset();
     rebuild(event.data.node, {
-      doc: this.iframe.contentDocument,
+      doc: iframeDoc,
       afterAppend,
       cache: this.cache,
       mirror: this.mirror,
     });
-    afterAppend(this.iframe.contentDocument, event.data.node.id);
+    afterAppend(iframeDoc, event.data.node.id);
 
     for (const { mutationInQueue, builtNode } of collectedIframes) {
       this.attachDocumentToIframe(mutationInQueue, builtNode);
@@ -853,13 +974,13 @@ export class Replayer {
         (m) => m !== mutationInQueue,
       );
     }
-    const { documentElement, head } = this.iframe.contentDocument;
+    const { documentElement, head } = iframeDoc;
     this.insertStyleRules(documentElement, head);
     collectedDialogs.forEach((d) => applyDialogToTopLevel(d));
     if (!this.service.state.matches('playing')) {
-      this.iframe.contentDocument
-        .getElementsByTagName('html')[0]
-        .classList.add('rrweb-paused');
+      const iframeHtmlElement = iframeDoc.getElementsByTagName('html')[0];
+
+      iframeHtmlElement && iframeHtmlElement.classList.add('rrweb-paused');
     }
     this.emitter.emit(ReplayerEvents.FullsnapshotRebuilded, event);
     if (!isSync) {
@@ -920,6 +1041,9 @@ export class Replayer {
       : this.mirror;
     type TNode = typeof mirror extends Mirror ? Node : RRNode;
     type TMirror = typeof mirror extends Mirror ? Mirror : RRDOMMirror;
+    const iframeContentDoc = getIFrameContentDocument(
+      iframeEl as HTMLIFrameElement,
+    );
 
     const collectedIframes: AppendedIframe[] = [];
     const collectedDialogs = new Set<HTMLDialogElement>();
@@ -930,9 +1054,10 @@ export class Replayer {
       const sn = (mirror as TMirror).getMeta(builtNode as unknown as TNode);
       if (
         sn?.type === NodeType.Element &&
-        sn?.tagName.toUpperCase() === 'HTML'
+        sn?.tagName.toUpperCase() === 'HTML' &&
+        iframeContentDoc
       ) {
-        const { documentElement, head } = iframeEl.contentDocument!;
+        const { documentElement, head } = iframeContentDoc;
         this.insertStyleRules(
           documentElement as HTMLElement | RRElement,
           head as HTMLElement | RRElement,
@@ -951,14 +1076,14 @@ export class Replayer {
     };
 
     buildNodeWithSN(mutation.node, {
-      doc: iframeEl.contentDocument! as Document,
+      doc: iframeContentDoc as Document,
       mirror: mirror as Mirror,
       hackCss: true,
       skipChild: false,
       afterAppend,
       cache: this.cache,
     });
-    afterAppend(iframeEl.contentDocument! as Document, mutation.node.id);
+    afterAppend(iframeContentDoc as Document, mutation.node.id);
 
     for (const { mutationInQueue, builtNode } of collectedIframes) {
       this.attachDocumentToIframe(mutationInQueue, builtNode);
@@ -991,7 +1116,8 @@ export class Replayer {
    * pause when loading style sheet, resume when loaded all timeout exceed
    */
   private waitForStylesheetLoad() {
-    const head = this.iframe.contentDocument?.head;
+    const iframeDoc = getIFrameContentDocument(this.iframe);
+    const head = iframeDoc?.head;
     if (head) {
       const unloadSheets: Set<HTMLLinkElement> = new Set();
       let timer: ReturnType<typeof setTimeout> | -1;
@@ -1124,10 +1250,17 @@ export class Replayer {
       }
       case IncrementalSource.Drag:
       case IncrementalSource.TouchMove:
-      case IncrementalSource.MouseMove:
+      case IncrementalSource.MouseMove: {
+        const pointerId = getPointerId(d);
+        if (!this.pointers[pointerId]) {
+          this.createPointer(pointerId, e);
+        }
+
+        const pointer = this.pointers[pointerId];
+
         if (isSync) {
           const lastPosition = d.positions[d.positions.length - 1];
-          this.mousePos = {
+          pointer.pointerPosition = {
             x: lastPosition.x,
             y: lastPosition.y,
             id: lastPosition.id,
@@ -1137,7 +1270,7 @@ export class Replayer {
           d.positions.forEach((p) => {
             const action = {
               doAction: () => {
-                this.moveAndHover(p.x, p.y, p.id, isSync, d);
+                this.moveAndHover(p.x, p.y, p.id, isSync, d, pointerId);
               },
               delay:
                 p.timeOffset +
@@ -1156,7 +1289,15 @@ export class Replayer {
           });
         }
         break;
+      }
       case IncrementalSource.MouseInteraction: {
+        const pointerId = getPointerId(d);
+        if (!this.pointers[pointerId]) {
+          this.createPointer(pointerId, e);
+        }
+
+        const pointer = this.pointers[pointerId];
+
         /**
          * Same as the situation of missing input target.
          */
@@ -1193,16 +1334,35 @@ export class Replayer {
           case MouseInteractions.MouseUp:
             if (isSync) {
               if (d.type === MouseInteractions.TouchStart) {
-                this.touchActive = true;
+                pointer.touchActive = true;
+
+                // prevents multiple touch circles from staying on the screen
+                // when the user seeks by breadcrumbs
+                Object.values(this.pointers).forEach((p) => {
+                  // don't set p.touchActive to false if p.touchActive is already true
+                  // so that multitouch still works.
+                  // p.touchActive can be null (in which case
+                  // we still want to set it as false) - it's set as null
+                  // in the ReplayerEvents.Flush handler after
+                  // the 'touch-active' class is added or removed.
+                  if (p !== pointer && !p.touchActive) {
+                    p.touchActive = false;
+                  }
+                });
               } else if (d.type === MouseInteractions.TouchEnd) {
-                this.touchActive = false;
+                pointer.touchActive = false;
+                pointer.pointerEl.remove();
+                if (pointer.mouseTail) {
+                  pointer.mouseTail.remove();
+                }
+                delete this.pointers[pointerId];
               }
               if (d.type === MouseInteractions.MouseDown) {
                 this.lastMouseDownEvent = [target, event];
               } else if (d.type === MouseInteractions.MouseUp) {
                 this.lastMouseDownEvent = null;
               }
-              this.mousePos = {
+              pointer.pointerPosition = {
                 x: d.x || 0,
                 y: d.y || 0,
                 id: d.id,
@@ -1211,9 +1371,9 @@ export class Replayer {
             } else {
               if (d.type === MouseInteractions.TouchStart) {
                 // don't draw a trail as user has lifted finger and is placing at a new point
-                this.tailPositions.length = 0;
+                pointer.tailPositions.length = 0;
               }
-              this.moveAndHover(d.x || 0, d.y || 0, d.id, isSync, d);
+              this.moveAndHover(d.x || 0, d.y || 0, d.id, isSync, d, pointerId);
               if (d.type === MouseInteractions.Click) {
                 /*
                  * don't want target.click() here as could trigger an iframe navigation
@@ -1223,14 +1383,18 @@ export class Replayer {
                  * removal and addition of .active class (along with void line to trigger repaint)
                  * triggers the 'click' css animation in styles/style.css
                  */
-                this.mouse.classList.remove('active');
-                void this.mouse.offsetWidth;
-                this.mouse.classList.add('active');
+                pointer.pointerEl.classList.remove('active');
+                void pointer.pointerEl.offsetWidth;
+                pointer.pointerEl.classList.add('active');
               } else if (d.type === MouseInteractions.TouchStart) {
-                void this.mouse.offsetWidth; // needed for the position update of moveAndHover to apply without the .touch-active transition
-                this.mouse.classList.add('touch-active');
+                void pointer.pointerEl.offsetWidth; // needed for the position update of moveAndHover to apply without the .touch-active transition
+                pointer.pointerEl.classList.add('touch-active');
               } else if (d.type === MouseInteractions.TouchEnd) {
-                this.mouse.classList.remove('touch-active');
+                pointer.pointerEl.remove();
+                if (pointer.mouseTail) {
+                  pointer.mouseTail.remove();
+                }
+                delete this.pointers[pointerId];
               } else {
                 // for MouseDown & MouseUp also invoke default behavior
                 target.dispatchEvent(event);
@@ -1239,9 +1403,9 @@ export class Replayer {
             break;
           case MouseInteractions.TouchCancel:
             if (isSync) {
-              this.touchActive = false;
+              pointer.touchActive = false;
             } else {
-              this.mouse.classList.remove('touch-active');
+              pointer.pointerEl.classList.remove('touch-active');
             }
             break;
           default:
@@ -1303,14 +1467,52 @@ export class Replayer {
           return this.debugNodeNotFound(d, d.id);
         }
         const mediaEl = target as HTMLMediaElement | RRMediaElement;
-        const { events } = this.service.state.context;
+        try {
+          if (d.currentTime !== undefined) {
+            mediaEl.currentTime = d.currentTime;
+          }
+          if (d.volume !== undefined) {
+            mediaEl.volume = d.volume;
+          }
+          if (d.muted !== undefined) {
+            mediaEl.muted = d.muted;
+          }
+          if (d.type === MediaInteractions.Pause) {
+            mediaEl.pause();
+          }
+          if (d.type === MediaInteractions.Play) {
+            // remove listener for 'canplay' event because play() is async and returns a promise
+            // i.e. media will evntualy start to play when data is loaded
+            // 'canplay' event fires even when currentTime attribute changes which may lead to
+            // unexpeted behavior
+            const maybePlayPromise = mediaEl.play();
 
-        this.mediaManager.mediaMutation({
-          target: mediaEl,
-          timeOffset: e.timestamp - events[0].timestamp,
-          mutation: d,
-        });
-
+            if (typeof maybePlayPromise?.catch === 'function') {
+              maybePlayPromise.catch((err) => {
+                // ignore rejections from play() as they are not useful and
+                // quite noisy. some examples:
+                // AbortError: The play() request was interrupted by a call to pause(). https://goo.gl/LdLk22
+                // AbortError: The play() request was interrupted by a new load request. https://goo.gl/LdLk22
+                // AbortError: The play() request was interrupted by a call to pause().
+                // NotAllowedError: play() failed because the user didn't interact with the document first. https://goo.gl/xX8pDD
+                // AbortError: The play() request was interrupted because the media was removed from the document.
+                // AbortError: The play() request was interrupted because video-only background media was paused to save power. https://goo.gl/LdLk22
+                // NotAllowedError: play() failed because the user didn't interact with the document first.
+                // NotAllowedError: play() can only be initiated by a user gesture.
+                // AbortError: The play() request was interrupted by end of playback. https://goo.gl/LdLk22
+                console.warn(err);
+              });
+            }
+          }
+          if (d.type === MediaInteractions.RateChange) {
+            mediaEl.playbackRate = d.playbackRate;
+          }
+        } catch (error) {
+          this.warn(
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access, @typescript-eslint/restrict-template-expressions
+            `Failed to replay media interactions: ${error.message || error}`,
+          );
+        }
         break;
       }
       case IncrementalSource.StyleSheetRule:
@@ -1320,7 +1522,7 @@ export class Replayer {
           else if (d.id)
             (
               this.virtualDom.mirror.getNode(d.id) as RRStyleElement | null
-            )?.rules.push(d);
+            )?.rules?.push(d);
         } else this.applyStyleSheetMutation(d);
         break;
       }
@@ -1364,7 +1566,7 @@ export class Replayer {
               : d.fontSource,
             d.descriptors,
           );
-          this.iframe.contentDocument?.fonts.add(fontFace);
+          getIFrameContentDocument(this.iframe)?.fonts.add(fontFace);
         } catch (error) {
           this.warn(error);
         }
@@ -1387,16 +1589,14 @@ export class Replayer {
     }
   }
 
-  /**
-   * Apply the mutation to the virtual dom or the real dom.
-   * @param d - The mutation data.
-   * @param isSync - Whether the mutation should be applied synchronously (while fast-forwarding).
-   */
   private applyMutation(d: mutationData, isSync: boolean) {
     // Only apply virtual dom optimization if the fast-forward process has node mutation. Because the cost of creating a virtual dom tree and executing the diff algorithm is usually higher than directly applying other kind of events.
     if (this.config.useVirtualDom && !this.usingVirtualDom && isSync) {
       this.usingVirtualDom = true;
-      buildFromDom(this.iframe.contentDocument!, this.mirror, this.virtualDom);
+      const iframeDoc = getIFrameContentDocument(this.iframe);
+      if (iframeDoc) {
+        buildFromDom(iframeDoc, this.mirror, this.virtualDom);
+      }
       // If these legacy missing nodes haven't been resolved, they should be converted to virtual nodes.
       if (Object.keys(this.legacy_missingNodeRetryMap).length) {
         for (const key in this.legacy_missingNodeRetryMap) {
@@ -1495,7 +1695,8 @@ export class Replayer {
     };
 
     const appendNode = (mutation: addedNodeMutation) => {
-      if (!this.iframe.contentDocument) {
+      const iframeDoc = getIFrameContentDocument(this.iframe);
+      if (!iframeDoc) {
         return this.warn('Looks like your replayer has been destroyed.');
       }
       let parent: Node | null | ShadowRoot | RRNode = mirror.getNode(
@@ -1537,7 +1738,7 @@ export class Replayer {
         ? mirror.getNode(mutation.node.rootId)
         : this.usingVirtualDom
         ? this.virtualDom
-        : this.iframe.contentDocument;
+        : iframeDoc;
       if (isSerializedIframe<typeof parent>(parent, mirror)) {
         this.attachDocumentToIframe(
           mutation,
@@ -1828,19 +2029,10 @@ export class Replayer {
                   // for safe
                 }
               }
-              if (attributeName === 'value' && target.nodeName === 'TEXTAREA') {
-                // this may or may not have an effect on the value property (which is what is displayed)
-                // depending on whether the textarea has been modified by the user yet
-                // TODO: replaceChildNodes is not available in RRDom
-                const textarea = target as TNode;
-                textarea.childNodes.forEach((c) =>
-                  textarea.removeChild(c as TNode),
-                );
-                const tn = target.ownerDocument?.createTextNode(value);
-                if (tn) {
-                  textarea.appendChild(tn as TNode);
-                }
-              } else {
+              // Not sure yet how this is happening during recording, but this
+              // prevents calling `setAttribute` on Text nodes (which does not
+              // have `setAttribute` method).
+              if (target.nodeType !== 3) {
                 (target as Element | RRElement).setAttribute(
                   attributeName,
                   value,
@@ -1891,7 +2083,8 @@ export class Replayer {
       return this.debugNodeNotFound(d, d.id);
     }
     const sn = this.mirror.getMeta(target);
-    if (target === this.iframe.contentDocument) {
+    const iframeDoc = getIFrameContentDocument(this.iframe);
+    if (target === iframeDoc) {
       this.iframe.contentWindow?.scrollTo({
         top: d.y,
         left: d.x,
@@ -2182,6 +2375,7 @@ export class Replayer {
     id: number,
     isSync: boolean,
     debugData: incrementalData,
+    pointerId: number,
   ) {
     const target = this.mirror.getNode(id);
     if (!target) {
@@ -2192,16 +2386,22 @@ export class Replayer {
     const _x = x * base.absoluteScale + base.x;
     const _y = y * base.absoluteScale + base.y;
 
-    this.mouse.style.left = `${_x}px`;
-    this.mouse.style.top = `${_y}px`;
+    const pointer = this.pointers[pointerId];
+    if (pointer && pointer.pointerEl) {
+      pointer.pointerEl.style.left = `${_x}px`;
+      pointer.pointerEl.style.top = `${_y}px`;
+    }
+
     if (!isSync) {
-      this.drawMouseTail({ x: _x, y: _y });
+      this.drawMouseTail({ x: _x, y: _y }, pointerId);
     }
     this.hoverElements(target as Element);
   }
 
-  private drawMouseTail(position: { x: number; y: number }) {
-    if (!this.mouseTail) {
+  private drawMouseTail(position: { x: number; y: number }, pointerId: number) {
+    const pointer = this.pointers[pointerId];
+
+    if (!pointer || !pointer.mouseTail) {
       return;
     }
 
@@ -2211,37 +2411,49 @@ export class Replayer {
         : Object.assign({}, defaultMouseTailConfig, this.config.mouseTail);
 
     const draw = () => {
-      if (!this.mouseTail) {
+      if (!pointer || !pointer.mouseTail) {
         return;
       }
-      const ctx = this.mouseTail.getContext('2d');
-      if (!ctx || !this.tailPositions.length) {
+      const mouseTail = pointer.mouseTail;
+
+      const ctx = mouseTail.getContext('2d');
+      if (!ctx || !pointer.tailPositions.length) {
         return;
       }
-      ctx.clearRect(0, 0, this.mouseTail.width, this.mouseTail.height);
+      ctx.clearRect(0, 0, mouseTail.width, mouseTail.height);
       ctx.beginPath();
       ctx.lineWidth = lineWidth;
       ctx.lineCap = lineCap;
       ctx.strokeStyle = strokeStyle;
-      ctx.moveTo(this.tailPositions[0].x, this.tailPositions[0].y);
-      this.tailPositions.forEach((p) => ctx.lineTo(p.x, p.y));
+      ctx.moveTo(pointer.tailPositions[0].x, pointer.tailPositions[0].y);
+      pointer.tailPositions.forEach((p) => ctx.lineTo(p.x, p.y));
       ctx.stroke();
     };
 
-    this.tailPositions.push(position);
+    pointer.tailPositions.push(position);
     draw();
     setTimeout(() => {
-      this.tailPositions = this.tailPositions.filter((p) => p !== position);
-      draw();
+      if (pointerId in this.pointers) {
+        pointer.tailPositions = pointer.tailPositions.filter(
+          (p) => p !== position,
+        );
+        draw();
+      }
     }, duration / this.speedService.state.context.timer.speed);
   }
 
   private hoverElements(el: Element) {
-    (this.lastHoveredRootNode || this.iframe.contentDocument)
-      ?.querySelectorAll('.\\:hover')
-      .forEach((hoveredEl) => {
+    const iframeDoc = getIFrameContentDocument(this.iframe);
+    const rootElement = this.lastHoveredRootNode || iframeDoc;
+
+    // Sometimes this throws because `querySelectorAll` is not a function,
+    // unsure of value of rootElement when this occurs
+    if (rootElement && typeof rootElement.querySelectorAll === 'function') {
+      rootElement.querySelectorAll('.\\:hover').forEach((hoveredEl) => {
         hoveredEl.classList.remove(':hover');
       });
+    }
+
     this.lastHoveredRootNode = el.getRootNode() as Document | ShadowRoot;
     let currentEl: Element | null = el;
     while (currentEl) {
@@ -2309,4 +2521,10 @@ export class Replayer {
   }
 }
 
-export { type PlayerMachineState, type SpeedMachineState, type playerConfig };
+export {
+  type PlayerState,
+  type SpeedState,
+  type PlayerMachineState,
+  type SpeedMachineState,
+  type playerConfig,
+};

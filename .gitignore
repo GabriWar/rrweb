@@ -16,7 +16,6 @@ temp
 # output of `yarn build`
 build
 dist
-umd
 
 # turbo cache
 .turbo
@@ -32,10 +31,19 @@ umd
 # It simply stores the exact state of your project so that the next commands can boot without having to resolve your workspaces all over again.
 .yarn/install-state.gz
 
+# TBD if we need these still, probably for 3.8
+typings
+typings-ts3.8
+dist-ts3.8
 
 # for vite
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 
-# bundle analysis files
-*-bundle-analysis.html
+# compiled vitest/vite configs
+vitest.config.js
+vitest.config.d.ts
+vitest.config.js.map
+
+# rrvideo temp output
+__rrvideo__temp__

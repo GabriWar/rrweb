@@ -1,5 +1,5 @@
+import { NodeType } from '@sentry-internal/rrweb-snapshot';
 import {
-  NodeType,
   EventType,
   IncrementalSource,
   eventWithTime,
@@ -8,10 +8,9 @@ import {
   Optional,
   mouseInteractionData,
   pluginEvent,
-} from '@rrweb/types';
+} from '@sentry-internal/rrweb-types';
 import type { recordOptions } from '../src/types';
 import * as puppeteer from 'puppeteer';
-import { format } from 'prettier';
 import * as path from 'path';
 import * as http from 'http';
 import * as url from 'url';
@@ -21,12 +20,12 @@ export async function launchPuppeteer(
   options?: Parameters<(typeof puppeteer)['launch']>[0],
 ) {
   return await puppeteer.launch({
-    headless: process.env.PUPPETEER_HEADLESS ? 'new' : false,
+    headless: process.env.PUPPETEER_HEADLESS ? true : false,
     defaultViewport: {
       width: 1920,
       height: 1080,
     },
-    args: ['--no-sandbox', '--disable-setuid-sandbox'],
+    args: ['--no-sandbox'],
     ...options,
   });
 }
@@ -50,7 +49,6 @@ export const startServer = (defaultPort = 3030) =>
       '.html': 'text/html',
       '.js': 'text/javascript',
       '.css': 'text/css',
-      '.webm': 'video/webm',
     };
     const s = http.createServer((req, res) => {
       const parsedUrl = url.parse(req.url!);
@@ -70,7 +68,6 @@ export const startServer = (defaultPort = 3030) =>
         res.setHeader('Access-Control-Allow-Origin', '*');
         res.setHeader('Access-Control-Allow-Methods', 'GET');
         res.setHeader('Access-Control-Allow-Headers', 'Content-type');
-        if (ext === '.webm') res.setHeader('Accept-Ranges', 'bytes');
         setTimeout(() => {
           res.end(data);
           // mock delay
@@ -105,22 +102,18 @@ export function getServerURL(server: http.Server): string {
  * Also remove timestamp from event.
  * @param snapshots incrementalSnapshotEvent[]
  */
-export function stringifySnapshots(snapshots: eventWithTime[]): string {
+export function stringifySnapshots(
+  snapshots: eventWithTime[],
+  { includeScroll }: { includeScroll?: boolean } = {},
+): string {
   return JSON.stringify(
     snapshots
       .filter((s) => {
         if (
-          // mouse move or viewport resize can happen on accidental user interference
-          // so we ignore them
-          (s.type === EventType.IncrementalSnapshot &&
-            (s.data.source === IncrementalSource.MouseMove ||
-              s.data.source === IncrementalSource.ViewportResize)) ||
-          // ignore '[vite] connected' messages from vite
-          (s.type === EventType.Plugin &&
-            s.data.plugin === 'rrweb/console@1' &&
-            (s.data.payload as { payload: string[] })?.payload?.find((msg) =>
-              msg.includes('[vite] connected'),
-            ))
+          s.type === EventType.IncrementalSnapshot &&
+          (s.data.source === IncrementalSource.MouseMove ||
+            s.data.source === IncrementalSource.ViewportResize ||
+            (!includeScroll && s.data.source === IncrementalSource.Scroll))
         ) {
           return false;
         }
@@ -221,7 +214,7 @@ export function stringifySnapshots(snapshots: eventWithTime[]): string {
           if (pluginPayload?.trace.length) {
             pluginPayload.trace = pluginPayload.trace.map((trace) => {
               return trace.replace(
-                /^pptr:evaluate;.*?:(\d+:\d+)/,
+                /^pptr[:;].*?:(\d+:\d+)/,
                 '__puppeteer_evaluation_script__:$1',
               );
             });
@@ -229,7 +222,7 @@ export function stringifySnapshots(snapshots: eventWithTime[]): string {
           if (pluginPayload?.payload.length) {
             pluginPayload.payload = pluginPayload.payload.map((payload) => {
               return payload.replace(
-                /pptr:evaluate;.*?:(\d+:\d+)/g,
+                /pptr[:;].*?:(\d+:\d+)/g,
                 '__puppeteer_evaluation_script__:$1',
               );
             });
@@ -250,57 +243,103 @@ export function stringifySnapshots(snapshots: eventWithTime[]): string {
 
 function stripBlobURLsFromAttributes(node: {
   attributes: {
-    [key: string]: any;
+    src?: string;
   };
 }) {
-  for (const attr in node.attributes) {
-    if (
-      typeof node.attributes[attr] === 'string' &&
-      node.attributes[attr].startsWith('blob:')
-    ) {
-      node.attributes[attr] = node.attributes[attr]
-        .replace(/[\w-]+$/, '...')
-        .replace(/:[0-9]+\//, ':xxxx/');
-    }
+  if (
+    'src' in node.attributes &&
+    node.attributes.src &&
+    typeof node.attributes.src === 'string' &&
+    node.attributes.src.startsWith('blob:')
+  ) {
+    node.attributes.src = node.attributes.src
+      .replace(/[\w-]+$/, '...')
+      .replace(/:[0-9]+\//, ':xxxx/');
   }
 }
 
-function stringifyDomSnapshot(mhtml: string): string {
-  const { Parser } = require('fast-mhtml');
-  const resources: string[] = [];
-  const p = new Parser({
-    rewriteFn: (filename: string): string => {
-      const index = resources.indexOf(filename);
-      const prefix = /^\w+/.exec(filename);
-      if (index !== -1) {
-        return `file-${prefix}-${index}`;
-      } else {
-        return `file-${prefix}-${resources.push(filename) - 1}`;
-      }
-    },
-  });
-  const result = p
-    .parse(mhtml) // parse file
-    .rewrite() // rewrite all links
-    .spit(); // return all contents
+function decodeQuotedPrintable(str: string): string {
+  // First remove soft line breaks, then decode bytes and reassemble as UTF-8
+  const withoutSoftBreaks = str.replace(/=\r?\n/g, '');
+  const bytes: number[] = [];
+  let i = 0;
+  while (i < withoutSoftBreaks.length) {
+    if (
+      withoutSoftBreaks[i] === '=' &&
+      i + 2 < withoutSoftBreaks.length &&
+      /[0-9A-Fa-f]{2}/.test(withoutSoftBreaks.substring(i + 1, i + 3))
+    ) {
+      bytes.push(parseInt(withoutSoftBreaks.substring(i + 1, i + 3), 16));
+      i += 3;
+    } else {
+      bytes.push(withoutSoftBreaks.charCodeAt(i));
+      i += 1;
+    }
+  }
+  return new TextDecoder('utf-8').decode(new Uint8Array(bytes));
+}
 
-  const newResult: { filename: string; content: string }[] = result.map(
-    (asset: { filename: string; content: string }) => {
-      const { filename, content } = asset;
-      let res: string | undefined;
-      if (filename.includes('frame')) {
-        res = format(content, {
-          parser: 'html',
-        });
+function parseMhtml(mhtml: string): { filename: string; content: string }[] {
+  const boundaryMatch = mhtml.match(/boundary="?([^"\r\n]+)"?/);
+  if (!boundaryMatch) return [{ filename: '', content: mhtml }];
+  const boundary = `--${boundaryMatch[1]}`;
+
+  const parts = mhtml.split(boundary).slice(1); // skip preamble
+  const assets: { filename: string; content: string }[] = [];
+
+  for (const part of parts) {
+    if (part.trim() === '--' || part.trim() === '') continue;
+    // Split headers from body (double newline, handling both \r\n and \n)
+    const headerEnd = part.search(/\r?\n\r?\n/);
+    if (headerEnd === -1) continue;
+    const separatorMatch = part.slice(headerEnd).match(/^(\r?\n\r?\n)/);
+    const headers = part.substring(0, headerEnd);
+    const body = part.substring(headerEnd + (separatorMatch?.[1].length || 4));
+    const locationMatch = headers.match(/Content-Location:\s*(.+)/i);
+    const filename = locationMatch ? locationMatch[1].trim() : '';
+    const isQuotedPrintable =
+      /Content-Transfer-Encoding:\s*quoted-printable/i.test(headers);
+    const content = (
+      isQuotedPrintable ? decodeQuotedPrintable(body) : body
+    ).trim();
+    assets.push({ filename, content });
+  }
+  return assets;
+}
+
+function stringifyDomSnapshot(mhtml: string): string {
+  const resources: string[] = [];
+  const rewriteFilename = (filename: string): string => {
+    const index = resources.indexOf(filename);
+    const prefix = /^\w+/.exec(filename)?.[0] || 'frame';
+    if (index !== -1) {
+      return `file-${prefix}-${index}`;
+    } else {
+      return `file-${prefix}-${resources.push(filename) - 1}`;
+    }
+  };
+
+  const assets = parseMhtml(mhtml);
+  const newResult = assets.map((asset) => {
+    const filename = rewriteFilename(asset.filename);
+    let content = asset.content;
+    // Rewrite references to other parts in the content
+    for (const other of assets) {
+      if (other.filename && content.includes(other.filename)) {
+        content = content
+          .split(other.filename)
+          .join(rewriteFilename(other.filename));
       }
-      return { filename, content: res || content };
-    },
-  );
+    }
+    return { filename, content };
+  });
+
   return newResult.map((asset) => Object.values(asset).join('\n')).join('\n\n');
 }
 
 export async function assertSnapshot(
   snapshotsOrPage: eventWithTime[] | puppeteer.Page,
+  options: { includeScroll: boolean } = { includeScroll: false },
 ) {
   let snapshots: eventWithTime[];
   if (!Array.isArray(snapshotsOrPage)) {
@@ -318,7 +357,7 @@ export async function assertSnapshot(
   }
 
   expect(snapshots).toBeDefined();
-  expect(stringifySnapshots(snapshots)).toMatchSnapshot();
+  expect(stringifySnapshots(snapshots, options)).toMatchSnapshot();
 }
 
 export function replaceLast(str: string, find: string, replace: string) {
@@ -330,7 +369,7 @@ export function replaceLast(str: string, find: string, replace: string) {
 }
 
 export async function assertDomSnapshot(page: puppeteer.Page) {
-  const cdp = await page.target().createCDPSession();
+  const cdp = await page.createCDPSession();
   const { data } = await cdp.send('Page.captureSnapshot', {
     format: 'mhtml',
   });
@@ -346,7 +385,10 @@ export function stripBase64(events: eventWithTime[]) {
     const newObj: Partial<T> = {};
     for (const prop in obj) {
       const value = obj[prop];
-      if (prop === 'base64' && typeof value === 'string') {
+      if (
+        (prop === 'base64' || prop === 'rr_dataURL') &&
+        typeof value === 'string'
+      ) {
         let index = base64Strings.indexOf(value);
         if (index === -1) {
           index = base64Strings.push(value) - 1;
@@ -361,11 +403,11 @@ export function stripBase64(events: eventWithTime[]) {
 
   return events.map((evt) => {
     if (
-      evt.type === EventType.IncrementalSnapshot &&
-      evt.data.source === IncrementalSource.CanvasMutation
+      evt.type === EventType.FullSnapshot ||
+      evt.type === EventType.IncrementalSnapshot
     ) {
       const newData = walk(evt.data);
-      return { ...evt, data: newData };
+      return { ...evt, data: newData } as eventWithTime;
     }
     return evt;
   });
@@ -726,6 +768,10 @@ export const polyfillWebGLGlobals = () => {
   global.WebGL2RenderingContext = WebGL2RenderingContext as any;
 };
 
+export function waitForTimeout(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export async function waitForRAF(
   pageOrFrame: puppeteer.Page | puppeteer.Frame,
 ) {
@@ -791,40 +837,29 @@ export function generateRecordSnippet(options: recordOptions<eventWithTime>) {
       window.snapshots.push(event);
     },
     ignoreSelector: ${JSON.stringify(options.ignoreSelector)},
+    blockSelector: ${JSON.stringify(options.blockSelector)},
+    unblockSelector: ${JSON.stringify(options.unblockSelector)},
     maskTextSelector: ${JSON.stringify(options.maskTextSelector)},
+    unmaskTextSelector: ${JSON.stringify(options.unmaskTextSelector)},
     maskAllInputs: ${options.maskAllInputs},
+    maskAllText: ${options.maskAllText},
     maskInputOptions: ${JSON.stringify(options.maskAllInputs)},
+    maskInputFn: ${options.maskInputFn},
     userTriggeredOnInput: ${options.userTriggeredOnInput},
-    maskTextClass: ${options.maskTextClass},
+    onMutation: ${options.onMutation || undefined},
+    maskAttributeFn: ${options.maskAttributeFn},
     maskTextFn: ${options.maskTextFn},
     maskInputFn: ${options.maskInputFn},
     recordCanvas: ${options.recordCanvas},
     recordAfter: '${options.recordAfter || 'load'}',
     inlineImages: ${options.inlineImages},
-    plugins: ${options.plugins}
+    plugins: ${options.plugins},
+    getCanvasManager: ${
+      options.recordCanvas
+        ? '(opts) => new rrweb.CanvasManager(opts)'
+        : 'undefined'
+    },
+    sampling: ${JSON.stringify(options.sampling)},
   });
   `;
 }
-
-export async function hideMouseAnimation(p: puppeteer.Page): Promise<void> {
-  await p.addStyleTag({
-    content: `.replayer-mouse-tail{display: none !important;}
-                html, body { margin: 0; padding: 0; }
-                iframe { border: none; }`,
-  });
-}
-
-export const fakeGoto = async (p: puppeteer.Page, url: string) => {
-  const intercept = async (request: puppeteer.HTTPRequest) => {
-    await request.respond({
-      status: 200,
-      contentType: 'text/html',
-      body: ' ', // non-empty string or page will load indefinitely
-    });
-  };
-  await p.setRequestInterception(true);
-  p.on('request', intercept);
-  await p.goto(url);
-  p.off('request', intercept);
-  await p.setRequestInterception(false);
-};

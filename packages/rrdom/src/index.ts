@@ -1,16 +1,20 @@
-import { createMirror as createNodeMirror } from 'rrweb-snapshot';
-import type { Mirror as NodeMirror } from 'rrweb-snapshot';
-import { NodeType as RRNodeType } from '@rrweb/types';
+import {
+  NodeType as RRNodeType,
+  createMirror as createNodeMirror,
+} from '@sentry-internal/rrweb-snapshot';
 import type {
+  Mirror as NodeMirror,
   IMirror,
   serializedNodeWithId,
+} from '@sentry-internal/rrweb-snapshot';
+import type {
   canvasMutationData,
   canvasEventWithTime,
   inputData,
   scrollData,
   styleSheetRuleData,
   styleDeclarationData,
-} from '@rrweb/types';
+} from '@sentry-internal/rrweb-types';
 import {
   BaseRRNode as RRNode,
   BaseRRCDATASection,
@@ -27,8 +31,8 @@ import {
   type IRRDocumentType,
   type IRRText,
   type IRRComment,
-  BaseRRDialogElement,
 } from './document';
+import { getIFrameContentDocument } from './util';
 
 export class RRDocument extends BaseRRDocument {
   private UNSERIALIZED_STARTING_ID = -2;
@@ -101,9 +105,6 @@ export class RRDocument extends BaseRRDocument {
       case 'STYLE':
         element = new RRStyleElement(upperTagName);
         break;
-      case 'DIALOG':
-        element = new RRDialogElement(upperTagName);
-        break;
       default:
         element = new RRElement(upperTagName);
         break;
@@ -150,8 +151,6 @@ export class RRElement extends BaseRRElement {
 }
 
 export class RRMediaElement extends BaseRRMediaElement {}
-
-export class RRDialogElement extends BaseRRDialogElement {}
 
 export class RRCanvasElement extends RRElement implements IRRElement {
   public rr_dataURL: string | null = null;
@@ -315,7 +314,7 @@ export function buildFromDom(
     }
 
     if (node.nodeName === 'IFRAME') {
-      const iframeDoc = (node as HTMLIFrameElement).contentDocument;
+      const iframeDoc = getIFrameContentDocument(node as HTMLIFrameElement);
       iframeDoc && walk(iframeDoc, rrNode);
     } else if (
       node.nodeType === NodeType.DOCUMENT_NODE ||
@@ -487,3 +486,4 @@ export { RRNode };
 
 export { diff, createOrGetNode, type ReplayerHandler } from './diff';
 export * from './document';
+export { getIFrameContentDocument, getIFrameContentWindow } from './util';

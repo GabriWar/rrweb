@@ -1,20 +1,13 @@
 /// <reference types="vite/client" />
 import dts from 'vite-plugin-dts';
-import { copyFileSync, mkdirSync, existsSync } from 'node:fs';
+import { copyFileSync } from 'node:fs';
 import { defineConfig, LibraryOptions, LibraryFormats, Plugin } from 'vite';
+import glob from 'fast-glob';
 import { build, Format } from 'esbuild';
-import { resolve, dirname } from 'path';
+import { resolve } from 'path';
 import { umdWrapper } from 'esbuild-plugin-umd-wrapper';
-import * as fs from 'node:fs';
-import { visualizer } from 'rollup-plugin-visualizer';
 
-// don't empty out dir if --watch flag is passed
-const emptyOutDir = !process.argv.includes('--watch');
-/**
- * Chrome web store does not allow base64 inline workers.
- * For chrome extension, we need to disable worker inlining to pass the review.
- */
-const disableWorkerInlining = process.env.DISABLE_WORKER_INLINING === 'true';
+const emptyOutDir = process.env.CLEAR_DIST_DIR !== 'false';
 
 function minifyAndUMDPlugin({
   name,
@@ -51,38 +44,22 @@ function minifyAndUMDPlugin({
               outDir,
             });
           } else {
-            const umdDir = dirname(outputFilePath).replace('/dist', '/umd');
-            if (!existsSync(umdDir)) {
-              mkdirSync(umdDir);
-            }
-            const outUmd = `${outputFilePath}.umd.cjs`;
             await buildFile({
               name,
               input: inputFilePath,
-              output: outUmd,
+              output: `${outputFilePath}.umd.cjs`,
               minify: false,
               isCss: false,
               outDir,
             });
-            // Workaround because jsdelivr does use correct mime types for .umd.cjs
-            // More info: https://github.com/jsdelivr/jsdelivr/issues/18584 https://github.com/rrweb-io/rrweb/pull/1704
-            copyFileSync(
-              outUmd,
-              `${outputFilePath.replace('/dist/', '/umd/')}.js`,
-            );
-            const outUmdMin = `${outputFilePath}.umd.min.cjs`;
             await buildFile({
               name,
               input: inputFilePath,
-              output: outUmdMin,
+              output: `${outputFilePath}.umd.min.cjs`,
               minify: true,
               isCss: false,
               outDir,
             });
-            copyFileSync(
-              outUmdMin,
-              `${outputFilePath.replace('/dist/', '/umd/')}.min.js`,
-            );
           }
         }
       }
@@ -111,7 +88,7 @@ async function buildFile({
     minify,
     sourcemap: true,
     format: isCss ? undefined : ('umd' as Format),
-    target: isCss ? undefined : 'es2017',
+    target: isCss ? undefined : 'es2020',
     treeShaking: !isCss,
     plugins: [
       umdWrapper({
@@ -136,11 +113,14 @@ export default function (
   return defineConfig(() => ({
     build: {
       // See https://vitejs.dev/guide/build.html#library-mode
+      target: 'es2020',
       lib: {
-        cssFileName: 'style', // maintain same file output name as Vite 5 after upgrade to 6
         entry,
         name,
         fileName,
+        // Vite 6 changed CSS output filename from 'style.css' to package-name-based.
+        // Preserve 'style.css' for backward compatibility with consumers.
+        cssFileName: 'style',
         // TODO: turn on `umd` for rrweb when https://github.com/schummar/vite/tree/feature/libMultiEntryUMD gets merged
         // More info: https://github.com/vitejs/vite/pull/7047#issuecomment-1288080855
         // formats: ['es', 'umd', 'cjs'],
@@ -156,6 +136,12 @@ export default function (
       minify: false,
 
       sourcemap: true,
+
+      // rollupOptions: {
+      //   output: {
+      //     manualChunks: {},
+      //   },
+      // },
     },
     plugins: [
       dts({
@@ -174,23 +160,6 @@ export default function (
         },
       }),
       minifyAndUMDPlugin({ name, outDir }),
-      visualizer({
-        filename: resolve(__dirname, name + '-bundle-analysis.html'), // Path for the HTML report
-        open: false, // don't Automatically open the report in the browser
-      }),
-      {
-        name: 'remove-worker-inline',
-        enforce: 'pre',
-        transform(code, id) {
-          if (!disableWorkerInlining) return;
-          if (/\.(js|ts|jsx|tsx)$/.test(id)) {
-            return {
-              code: code.replace(/\?worker&inline/g, '?worker'),
-              map: null,
-            };
-          }
-        },
-      },
       ...plugins,
     ],
   }));

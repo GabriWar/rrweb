@@ -2,6 +2,19 @@
   "extends": "../../tsconfig.base.json",
   "include": ["src"],
   "compilerOptions": {
+    "module": "ESNext",
+    "moduleResolution": "Node",
+    "target": "ES2020",
+    "noImplicitAny": true,
+    "strictNullChecks": true,
+    "removeComments": true,
+    "preserveConstEnums": true,
+    "outDir": "build",
+    "lib": [
+      "es6",
+      "dom",
+      "es2021.WeakRef"
+    ],
     "rootDir": "src",
     "tsBuildInfoFile": "./tsconfig.tsbuildinfo",
     "types": [
@@ -9,6 +22,7 @@
       "vite/client",
       "@types/dom-mediacapture-transform",
       "@types/offscreencanvas",
+
       // rrweb specific:
       /*
        * @see https://vitest.dev/config/#globals
@@ -17,22 +31,23 @@
        */
       "vitest/globals"
     ],
+
     // TODO: enable me in the future, this is quite a large project
     // at time of writing (April 2024) there are over 100 errors in rrweb
     "strict": false
   },
   "references": [
     {
-      "path": "../types"
-    },
-    {
-      "path": "../utils"
-    },
-    {
       "path": "../rrdom"
     },
     {
       "path": "../rrweb-snapshot"
+    },
+    {
+      "path": "../types"
+    },
+    {
+      "path": "../rrweb-worker"
     }
   ]
 }

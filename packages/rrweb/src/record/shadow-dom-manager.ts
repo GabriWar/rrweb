@@ -9,10 +9,14 @@ import {
   initScrollObserver,
   initAdoptedStyleSheetObserver,
 } from './observer';
-import { inDom } from '../utils';
+import { inDom, setTimeout } from '../utils';
 import type { Mirror } from 'rrweb-snapshot';
 import { isNativeShadowDom } from 'rrweb-snapshot';
 import dom, { patch } from '@rrweb/utils';
+import {
+  getIFrameContentDocument,
+  getIFrameContentWindow,
+} from 'rrdom';
 
 type BypassOptions = Omit<
   MutationBufferParam,
@@ -21,7 +25,29 @@ type BypassOptions = Omit<
   sampling: SamplingStrategy;
 };
 
-export class ShadowDomManager {
+export interface ShadowDomManagerInterface {
+  init(): void;
+  addShadowRoot(shadowRoot: ShadowRoot, doc: Document): void;
+  observeAttachShadow(iframeElement: HTMLIFrameElement): void;
+  reset(): void;
+}
+
+export class ShadowDomManagerNoop implements ShadowDomManagerInterface {
+  public init() {
+    // noop
+  }
+  public addShadowRoot() {
+    // noop
+  }
+  public observeAttachShadow() {
+    // noop
+  }
+  public reset() {
+    // noop
+  }
+}
+
+export class ShadowDomManager implements ShadowDomManagerInterface {
   private shadowDoms = new WeakSet<ShadowRoot>();
   private mutationCb: mutationCallBack;
   private scrollCb: scrollCallback;
@@ -53,6 +79,7 @@ export class ShadowDomManager {
     if (!isNativeShadowDom(shadowRoot)) return;
     if (this.shadowDoms.has(shadowRoot)) return;
     this.shadowDoms.add(shadowRoot);
+    this.bypassOptions.canvasManager.addShadowRoot(shadowRoot);
     const observer = initMutationObserver(
       {
         ...this.bypassOptions,
@@ -100,15 +127,16 @@ export class ShadowDomManager {
    * Monkey patch 'attachShadow' of an IFrameElement to observe newly added shadow doms.
    */
   public observeAttachShadow(iframeElement: HTMLIFrameElement) {
-    if (!iframeElement.contentWindow || !iframeElement.contentDocument) return;
-
+    const iframeDoc = getIFrameContentDocument(iframeElement);
+    const iframeWindow = getIFrameContentWindow(iframeElement);
+    if (!iframeDoc || !iframeWindow) return;
     this.patchAttachShadow(
       (
-        iframeElement.contentWindow as Window & {
+        iframeWindow as Window & {
           Element: { prototype: Element };
         }
       ).Element,
-      iframeElement.contentDocument,
+      iframeDoc,
     );
   }
 
@@ -153,5 +181,6 @@ export class ShadowDomManager {
     });
     this.restoreHandlers = [];
     this.shadowDoms = new WeakSet();
+    this.bypassOptions.canvasManager.resetShadowRoots();
   }
 }

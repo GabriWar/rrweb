@@ -1,18 +1,20 @@
 {
   "name": "@rrweb/types",
-  "version": "2.0.0-alpha.20",
+  "version": "2.42.0",
   "publishConfig": {
     "access": "public"
   },
   "keywords": [
     "rrweb",
-    "@rrweb/types"
+    "rrweb-types"
   ],
   "scripts": {
     "dev": "vite build --watch",
-    "build": "yarn turbo run prepublish",
-    "check-types": "tsc -noEmit",
-    "prepublish": "tsc -noEmit && vite build",
+    "build": "yarn run check-types && vite build",
+    "build:tarball": "yarn pack",
+    "check-types": "tsc --noEmit",
+    "prepack": "yarn run build && yarn run typings:downlevel",
+    "typings:downlevel": "downlevel-dts dist dist/ts3.8 --to ts3.8",
     "lint": "yarn eslint src/**/*.ts"
   },
   "homepage": "https://github.com/rrweb-io/rrweb/tree/main/packages/@rrweb/types#readme",
@@ -25,30 +27,40 @@
   },
   "license": "MIT",
   "type": "module",
-  "main": "./dist/types.umd.cjs",
-  "module": "./dist/types.js",
-  "unpkg": "./dist/types.umd.cjs",
+  "main": "./dist/rrweb-types.umd.cjs",
+  "module": "./dist/rrweb-types.js",
   "typings": "dist/index.d.ts",
+  "typesVersions": {
+    "<3.9": {
+      "dist/index.d.ts": [
+        "dist/ts3.8/index.d.ts"
+      ]
+    }
+  },
   "exports": {
     ".": {
       "import": {
         "types": "./dist/index.d.ts",
-        "default": "./dist/types.js"
+        "default": "./dist/rrweb-types.js"
       },
       "require": {
         "types": "./dist/index.d.cts",
-        "default": "./dist/types.umd.cjs"
+        "default": "./dist/rrweb-types.umd.cjs"
       }
     }
   },
   "files": [
-    "umd",
     "dist",
     "package.json"
   ],
   "devDependencies": {
-    "vite": "^6.0.1",
-    "vite-plugin-dts": "^3.9.1"
+    "downlevel-dts": "https://github.com/getsentry/downlevel-dts",
+    "vite": "^6.4.2",
+    "vite-plugin-dts": "^4.5.4"
+  },
+  "dependencies": {
+    "rrweb-snapshot": "2.42.0",
+    "@types/css-font-loading-module": "0.0.7"
   },
   "browserslist": [
     "supports es6-class"

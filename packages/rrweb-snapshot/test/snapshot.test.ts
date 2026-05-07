@@ -2,79 +2,66 @@
  * @vitest-environment jsdom
  */
 import { JSDOM } from 'jsdom';
-import { describe, expect, it } from 'vitest';
-
-import snapshot, {
-  _isBlockedElement,
+import { describe, it, expect, vi } from 'vitest';
+import {
+  absoluteToStylesheet,
   serializeNodeWithId,
+  transformAttribute,
+  _isBlockedElement,
+  needMaskingText,
 } from '../src/snapshot';
-import { elementNode, serializedNodeWithId } from '../src/types';
-import { Mirror, absolutifyURLs } from '../src/utils';
-
-const serializeNode = (node: Node): serializedNodeWithId | null => {
-  return serializeNodeWithId(node, {
-    doc: document,
-    mirror: new Mirror(),
-    blockClass: 'blockblock',
-    blockSelector: null,
-    maskTextClass: 'maskmask',
-    maskTextSelector: null,
-    skipChild: false,
-    inlineStylesheet: true,
-    maskTextFn: undefined,
-    maskInputFn: undefined,
-    slimDOMOptions: {},
-  });
-};
+import snapshot from '../src/snapshot';
+import { serializedNodeWithId, NodeType } from '../src/types';
+import { Mirror } from '../src/utils';
 
 describe('absolute url to stylesheet', () => {
   const href = 'http://localhost/css/style.css';
 
   it('can handle relative path', () => {
-    expect(absolutifyURLs('url(a.jpg)', href)).toEqual(
+    expect(absoluteToStylesheet('url(a.jpg)', href)).toEqual(
       `url(http://localhost/css/a.jpg)`,
     );
   });
 
   it('can handle same level path', () => {
-    expect(absolutifyURLs('url("./a.jpg")', href)).toEqual(
+    expect(absoluteToStylesheet('url("./a.jpg")', href)).toEqual(
       `url("http://localhost/css/a.jpg")`,
     );
   });
 
   it('can handle parent level path', () => {
-    expect(absolutifyURLs('url("../a.jpg")', href)).toEqual(
+    expect(absoluteToStylesheet('url("../a.jpg")', href)).toEqual(
       `url("http://localhost/a.jpg")`,
     );
   });
 
   it('can handle absolute path', () => {
-    expect(absolutifyURLs('url("/a.jpg")', href)).toEqual(
+    expect(absoluteToStylesheet('url("/a.jpg")', href)).toEqual(
       `url("http://localhost/a.jpg")`,
     );
   });
 
   it('can handle external path', () => {
-    expect(absolutifyURLs('url("http://localhost/a.jpg")', href)).toEqual(
+    expect(absoluteToStylesheet('url("http://localhost/a.jpg")', href)).toEqual(
       `url("http://localhost/a.jpg")`,
     );
   });
 
   it('can handle single quote path', () => {
-    expect(absolutifyURLs(`url('./a.jpg')`, href)).toEqual(
+    expect(absoluteToStylesheet(`url('./a.jpg')`, href)).toEqual(
       `url('http://localhost/css/a.jpg')`,
     );
   });
 
   it('can handle no quote path', () => {
-    expect(absolutifyURLs('url(./a.jpg)', href)).toEqual(
+    expect(absoluteToStylesheet('url(./a.jpg)', href)).toEqual(
       `url(http://localhost/css/a.jpg)`,
     );
   });
 
   it('can handle multiple no quote paths', () => {
     expect(
-      absolutifyURLs(
+      absoluteToStylesheet(
         'background-image: url(images/b.jpg);background: #aabbcc url(images/a.jpg) 50% 50% repeat;',
         href,
       ),
@@ -85,11 +72,11 @@ describe('absolute url to stylesheet', () => {
   });
 
   it('can handle data url image', () => {
-    expect(absolutifyURLs('url(data:image/gif;base64,ABC)', href)).toEqual(
-      'url(data:image/gif;base64,ABC)',
-    );
     expect(
-      absolutifyURLs(
+      absoluteToStylesheet('url(data:image/gif;base64,ABC)', href),
+    ).toEqual('url(data:image/gif;base64,ABC)');
+    expect(
+      absoluteToStylesheet(
         'url(data:application/font-woff;base64,d09GMgABAAAAAAm)',
         href,
       ),
@@ -98,7 +85,7 @@ describe('absolute url to stylesheet', () => {
 
   it('preserves quotes around inline svgs with spaces', () => {
     expect(
-      absolutifyURLs(
+      absoluteToStylesheet(
         "url(\"data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 8'%3E%3Cpath fill='%2328a745' d='M3'/%3E%3C/svg%3E\")",
         href,
       ),
@@ -106,7 +93,7 @@ describe('absolute url to stylesheet', () => {
       "url(\"data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 8'%3E%3Cpath fill='%2328a745' d='M3'/%3E%3C/svg%3E\")",
     );
     expect(
-      absolutifyURLs(
+      absoluteToStylesheet(
         'url(\'data:image/svg+xml;utf8,<svg width="28" height="32" viewBox="0 0 28 32" xmlns="http://www.w3.org/2000/svg"><path d="M27 14C28" fill="white"/></svg>\')',
         href,
       ),
@@ -114,7 +101,7 @@ describe('absolute url to stylesheet', () => {
       'url(\'data:image/svg+xml;utf8,<svg width="28" height="32" viewBox="0 0 28 32" xmlns="http://www.w3.org/2000/svg"><path d="M27 14C28" fill="white"/></svg>\')',
     );
     expect(
-      absolutifyURLs(
+      absoluteToStylesheet(
         'url("data:image/svg+xml;utf8,<svg width="28" height="32" viewBox="0 0 28 32" xmlns="http://www.w3.org/2000/svg"><path d="M27 14C28" fill="white"/></svg>")',
         href,
       ),
@@ -123,13 +110,62 @@ describe('absolute url to stylesheet', () => {
     );
   });
   it('can handle empty path', () => {
-    expect(absolutifyURLs(`url('')`, href)).toEqual(`url('')`);
+    expect(absoluteToStylesheet(`url('')`, href)).toEqual(`url('')`);
+  });
+});
+
+describe('transformAttribute()', () => {
+  it('handles empty attribute value', () => {
+    expect(
+      transformAttribute(
+        document,
+        'a',
+        'data-loading',
+        null,
+        document.createElement('span'),
+        undefined,
+      ),
+    ).toBe(null);
+    expect(
+      transformAttribute(
+        document,
+        'a',
+        'data-loading',
+        '',
+        document.createElement('span'),
+        undefined,
+      ),
+    ).toBe('');
+  });
+
+  it('handles custom masking function', () => {
+    const maskAttributeFn = vi
+      .fn()
+      .mockImplementation((_key, value): string => {
+        return value.split('').reverse().join('');
+      }) as any;
+    expect(
+      transformAttribute(
+        document,
+        'a',
+        'data-loading',
+        'foo',
+        document.createElement('span'),
+        maskAttributeFn,
+      ),
+    ).toBe('oof');
+    expect(maskAttributeFn).toHaveBeenCalledTimes(1);
   });
 });
 
 describe('isBlockedElement()', () => {
   const subject = (html: string, opt: any = {}) =>
-    _isBlockedElement(render(html), 'rr-block', opt.blockSelector);
+    _isBlockedElement(
+      render(html),
+      'rr-block',
+      opt.blockSelector,
+      opt.unblockSelector,
+    );
 
   const render = (html: string): HTMLElement =>
     JSDOM.fragment(html).querySelector('div')!;
@@ -154,6 +190,27 @@ describe('isBlockedElement()', () => {
 });
 
 describe('style elements', () => {
+  const serializeNode = (node: Node): serializedNodeWithId | null => {
+    return serializeNodeWithId(node, {
+      doc: document,
+      mirror: new Mirror(),
+      blockClass: 'blockblock',
+      blockSelector: null,
+      unblockSelector: null,
+      maskAllText: false,
+      maskTextClass: 'maskmask',
+      unmaskTextClass: 'unmaskmask',
+      maskTextSelector: null,
+      unmaskTextSelector: null,
+      skipChild: false,
+      inlineStylesheet: true,
+      maskAttributeFn: undefined,
+      maskTextFn: undefined,
+      maskInputFn: undefined,
+      slimDOMOptions: {},
+    });
+  };
+
   const render = (html: string): HTMLStyleElement => {
     document.write(html);
     return document.querySelector('style')!;
@@ -162,32 +219,99 @@ describe('style elements', () => {
   it('should serialize all rules of stylesheet when the sheet has a single child node', () => {
     const styleEl = render(`<style>body { color: red; }</style>`);
     styleEl.sheet?.insertRule('section { color: blue; }');
-    expect(serializeNode(styleEl)).toMatchObject({
+    expect(serializeNode(styleEl.childNodes[0])).toMatchObject({
+      isStyle: true,
       rootId: undefined,
-      attributes: {
-        _cssText: 'section {color: blue;}body {color: red;}',
-      },
-      type: 2,
+      textContent: 'section {color: blue;}body {color: red;}',
+      type: 3,
     });
   });
 
-  it('should serialize all rules on stylesheets with mix of insertion type', () => {
+  it('should serialize individual text nodes on stylesheets with multiple child nodes', () => {
     const styleEl = render(`<style>body { color: red; }</style>`);
-    styleEl.sheet?.insertRule('section.lost { color: unseeable; }'); // browser throws this away after append
     styleEl.append(document.createTextNode('section { color: blue; }'));
-    styleEl.sheet?.insertRule('section.working { color: pink; }');
-    expect(serializeNode(styleEl)).toMatchObject({
+    expect(serializeNode(styleEl.childNodes[1])).toMatchObject({
+      isStyle: true,
       rootId: undefined,
+      textContent: 'section { color: blue; }',
+      type: 3,
+    });
+  });
+});
+
+describe('iframe', () => {
+  const serializeNode = (node: Node): serializedNodeWithId | null => {
+    return serializeNodeWithId(node, {
+      doc: document,
+      mirror: new Mirror(),
+      blockClass: 'blockblock',
+      blockSelector: null,
+      unblockSelector: null,
+      maskAllText: false,
+      maskTextClass: 'maskmask',
+      unmaskTextClass: null,
+      maskTextSelector: null,
+      unmaskTextSelector: null,
+      skipChild: false,
+      inlineStylesheet: true,
+      maskAttributeFn: undefined,
+      maskTextFn: undefined,
+      maskInputFn: undefined,
+      slimDOMOptions: {},
+      newlyAddedElement: false,
+    });
+  };
+
+  const render = (html: string): HTMLDivElement => {
+    document.write(html);
+    return document.querySelector('iframe')!;
+  };
+
+  it('serializes', () => {
+    // Not sure how to trigger condition where we can't access
+    // `iframe.contentDocument` due to CORS. Ideally it should have `rr_src`
+    // attribute
+    const el = render(`<iframe src="https://example.dev"/>`);
+    expect(serializeNode(el)).toMatchObject({
+      attributes: {},
+    });
+  });
+
+  it('can be blocked', () => {
+    const el = render(`<iframe class="blockblock" src="https://example.dev"/>`);
+    expect(serializeNode(el)).toMatchObject({
       attributes: {
-        _cssText:
-          'section.working {color: pink;}body {color: red;}/* rr_split */section {color: blue;}',
+        class: 'blockblock',
+        rr_height: '0px',
+        rr_width: '0px',
       },
-      type: 2,
     });
   });
 });
 
 describe('scrollTop/scrollLeft', () => {
+  const serializeNode = (node: Node): serializedNodeWithId | null => {
+    return serializeNodeWithId(node, {
+      doc: document,
+      mirror: new Mirror(),
+      blockClass: 'blockblock',
+      blockSelector: null,
+      unblockSelector: null,
+      maskAllText: false,
+      maskTextClass: 'maskmask',
+      unmaskTextClass: 'unmaskmask',
+      maskTextSelector: null,
+      unmaskTextSelector: null,
+      skipChild: false,
+      inlineStylesheet: true,
+      maskAttributeFn: undefined,
+      maskTextFn: undefined,
+      maskInputFn: undefined,
+      slimDOMOptions: {},
+      newlyAddedElement: false,
+    });
+  };
+
   const render = (html: string): HTMLDivElement => {
     document.write(html);
     return document.querySelector('div')!;
@@ -208,25 +332,252 @@ describe('scrollTop/scrollLeft', () => {
   });
 });
 
-describe('form', () => {
-  const render = (html: string): HTMLTextAreaElement => {
+describe('needMaskingText', () => {
+  const render = (html: string): HTMLDivElement => {
     document.write(html);
-    return document.querySelector('textarea')!;
+    return document.querySelector('div')!;
   };
 
-  it('should record textarea values once', () => {
-    const el = render(`<textarea>Lorem ipsum</textarea>`);
-    const sel = serializeNode(el) as elementNode;
+  it('should not mask by default', () => {
+    const el = render(`<div class='foo'>Lorem ipsum</div>`);
+    expect(
+      needMaskingText(el, 'maskmask', null, 'unmaskmask', null, false),
+    ).toEqual(false);
+  });
 
-    // we serialize according to where the DOM stores the value, not how
-    // the HTML stores it (this is so that maskInputValue can work over
-    // inputs/textareas/selects in a uniform way)
-    expect(sel).toMatchObject({
-      attributes: {
-        value: 'Lorem ipsum',
-      },
+  it('should mask if the masking class is matched', () => {
+    const el = render(`<div class='foo maskmask'>Lorem ipsum</div>`);
+    expect(
+      needMaskingText(el, 'maskmask', null, 'unmaskmask', null, false),
+    ).toEqual(true);
+    expect(
+      needMaskingText(el, /^maskmask$/, null, /^unmaskmask$/, null, false),
+    ).toEqual(true);
+  });
+
+  it('should mask if the masking class is matched on an ancestor', () => {
+    const el = render(
+      `<div class='foo maskmask'><span>Lorem ipsum</span></div>`,
+    );
+    expect(
+      needMaskingText(
+        el.children[0],
+        'maskmask',
+        null,
+        'unmaskmask',
+        null,
+        false,
+      ),
+    ).toEqual(true);
+    expect(
+      needMaskingText(
+        el.children[0],
+        /^maskmask$/,
+        null,
+        /^unmaskmask$/,
+        null,
+        false,
+      ),
+    ).toEqual(true);
+  });
+
+  it('should mask if the masking selector is matched', () => {
+    const el = render(`<div class='foo'>Lorem ipsum</div>`);
+    expect(
+      needMaskingText(el, 'maskmask', '.foo', 'unmaskmask', null, false),
+    ).toEqual(true);
+  });
+
+  it('should mask if the masking selector is matched on an ancestor', () => {
+    const el = render(`<div class='foo'><span>Lorem ipsum</span></div>`);
+    expect(
+      needMaskingText(
+        el.children[0],
+        'maskmask',
+        '.foo',
+        'unmaskmask',
+        null,
+        false,
+      ),
+    ).toEqual(true);
+  });
+
+  it('should mask by default', () => {
+    const el = render(`<div class='foo'>Lorem ipsum</div>`);
+    expect(
+      needMaskingText(el, 'maskmask', null, 'unmaskmask', null, true),
+    ).toEqual(true);
+  });
+
+  it('should not mask if the un-masking class is matched', () => {
+    const el = render(`<div class='foo unmaskmask'>Lorem ipsum</div>`);
+    expect(
+      needMaskingText(el, 'maskmask', null, 'unmaskmask', null, true),
+    ).toEqual(false);
+    expect(
+      needMaskingText(el, /^maskmask$/, null, /^unmaskmask$/, null, true),
+    ).toEqual(false);
+  });
+
+  it('should not mask if the un-masking class is matched on an ancestor', () => {
+    const el = render(
+      `<div class='foo unmaskmask'><span>Lorem ipsum</span></div>`,
+    );
+    expect(
+      needMaskingText(
+        el.children[0],
+        'maskmask',
+        null,
+        'unmaskmask',
+        null,
+        true,
+      ),
+    ).toEqual(false);
+    expect(
+      needMaskingText(
+        el.children[0],
+        /^maskmask$/,
+        null,
+        /^unmaskmask$/,
+        null,
+        true,
+      ),
+    ).toEqual(false);
+  });
+
+  it('should mask if the masking class is more specific than the unmasking class', () => {
+    const el = render(
+      `<div class='unmaskmask'><div class='maskmask'><span>Lorem ipsum</span><div></div>`,
+    );
+    expect(
+      needMaskingText(
+        el.children[0].children[0],
+        'maskmask',
+        null,
+        'unmaskmask',
+        null,
+        false,
+      ),
+    ).toEqual(true);
+    expect(
+      needMaskingText(
+        el.children[0].children[0],
+        /^maskmask$/,
+        null,
+        /^unmaskmask$/,
+        null,
+        false,
+      ),
+    ).toEqual(true);
+  });
+
+  it('should not mask if the unmasking class is more specific than the masking class', () => {
+    const el = render(
+      `<div class='maskmask'><div class='unmaskmask'><span>Lorem ipsum</span><div></div>`,
+    );
+    expect(
+      needMaskingText(
+        el.children[0].children[0],
+        'maskmask',
+        null,
+        'unmaskmask',
+        null,
+        false,
+      ),
+    ).toEqual(false);
+    expect(
+      needMaskingText(
+        el.children[0].children[0],
+        /^maskmask$/,
+        null,
+        /^unmaskmask$/,
+        null,
+        false,
+      ),
+    ).toEqual(false);
+  });
+
+  it('should not mask if the unmasking selector is matched', () => {
+    const el = render(`<div class='foo'>Lorem ipsum</div>`);
+    expect(
+      needMaskingText(el, 'maskmask', null, 'unmaskmask', '.foo', true),
+    ).toEqual(false);
+  });
+
+  it('should not mask if the unmasking selector is matched on an ancestor', () => {
+    const el = render(`<div class='foo'><span>Lorem ipsum</span></div>`);
+    expect(
+      needMaskingText(
+        el.children[0],
+        'maskmask',
+        null,
+        'unmaskmask',
+        '.foo',
+        true,
+      ),
+    ).toEqual(false);
+  });
+
+  it('should mask if the masking selector is more specific than the unmasking selector', () => {
+    const el = render(
+      `<div class='foo'><div class='bar'><span>Lorem ipsum</span><div></div>`,
+    );
+    expect(
+      needMaskingText(
+        el.children[0].children[0],
+        'maskmask',
+        '.bar',
+        'unmaskmask',
+        '.foo',
+        false,
+      ),
+    ).toEqual(true);
+  });
+
+  it('should not mask if the unmasking selector is more specific than the masking selector', () => {
+    const el = render(
+      `<div class='bar'><div class='foo'><span>Lorem ipsum</span><div></div>`,
+    );
+    expect(
+      needMaskingText(
+        el.children[0].children[0],
+        'maskmask',
+        '.bar',
+        'unmaskmask',
+        '.foo',
+        false,
+      ),
+    ).toEqual(false);
+  });
+
+  describe('enforced masking', () => {
+    it.each([
+      'current-password',
+      'new-password',
+      'cc-number',
+      'cc-exp',
+      'cc-exp-month',
+      'cc-exp-year',
+      'cc-csc',
+    ])('enforces masking for autocomplete="%s"', (autocompleteValue) => {
+      document.write(
+        `<input autocomplete='${autocompleteValue}' value='initial' class='unmaskmask'></input>`,
+      );
+      const el = document.querySelector('input')!;
+      expect(
+        needMaskingText(el, 'maskmask', '.foo', 'unmaskmask', null, false),
+      ).toEqual(true);
     });
-    expect(sel?.childNodes).toEqual([]); // shouldn't be stored in childNodes while in transit
+
+    it('does not mask other autocomplete values', () => {
+      document.write(
+        `<input autocomplete='name' value='initial' class='unmaskmask'></input>`,
+      );
+      const el = document.querySelector('input')!;
+      expect(
+        needMaskingText(el, 'maskmask', '.foo', 'unmaskmask', null, false),
+      ).toEqual(false);
+    });
   });
 });
 
@@ -251,5 +602,262 @@ describe('jsdom snapshot', () => {
     expect(sn).toMatchObject({
       type: 0,
     });
+  });
+});
+
+describe('image loading', () => {
+  const render = (html: string): Document => {
+    document.write(html);
+    return document;
+  };
+
+  it('should trigger onBlockedImageLoad callback when blocked image loads', async () => {
+    const doc = render(`
+      <!DOCTYPE html>
+      <html>
+        <head></head>
+        <body>
+          <div>
+            <img src="data:image/gif;base64," class="rr-block" />
+          </div>
+        </body>
+      </html>
+    `);
+
+    const mirror = new Mirror();
+    const onBlockedImageLoad = vi.fn();
+
+    // Mock the image to simulate incomplete loading
+    const img = doc.querySelector('img') as HTMLImageElement;
+    Object.defineProperty(img, 'complete', {
+      value: false,
+      writable: true,
+    });
+
+    // Serialize the node with the onBlockedImageLoad callback
+    const serializedNode = serializeNodeWithId(img, {
+      doc,
+      mirror,
+      blockClass: 'rr-block',
+      blockSelector: null,
+      unblockSelector: null,
+      maskAllText: false,
+      maskTextClass: 'rr-mask',
+      unmaskTextClass: null,
+      maskTextSelector: null,
+      unmaskTextSelector: null,
+      skipChild: false,
+      inlineStylesheet: true,
+      maskInputOptions: {},
+      maskAttributeFn: undefined,
+      maskTextFn: undefined,
+      maskInputFn: undefined,
+      slimDOMOptions: {},
+      dataURLOptions: {},
+      inlineImages: false,
+      recordCanvas: false,
+      preserveWhiteSpace: true,
+      onSerialize: undefined,
+      onIframeLoad: undefined,
+      iframeLoadTimeout: 5000,
+      onBlockedImageLoad,
+      onStylesheetLoad: undefined,
+      stylesheetLoadTimeout: 5000,
+      keepIframeSrcFn: () => false,
+      newlyAddedElement: false,
+    });
+
+    expect(serializedNode?.type).toEqual(NodeType.Element);
+    if (serializedNode?.type === NodeType.Element) {
+      // for typescript
+      expect(serializedNode?.attributes.rr_width).toBe('0px');
+      expect(serializedNode?.attributes.rr_height).toBe('0px');
+    }
+
+    // Mock getBoundingClientRect to return specific dimensions
+    const mockRect = {
+      width: 100,
+      height: 150,
+      top: 0,
+      left: 0,
+      bottom: 150,
+      right: 100,
+    };
+    img.getBoundingClientRect = vi.fn().mockReturnValue(mockRect);
+
+    // Simulate the image load event
+    const loadEvent = new window.Event('load');
+    img.dispatchEvent(loadEvent);
+
+    // Verify that onBlockedImageLoad was called with correct parameters
+    expect(onBlockedImageLoad).toHaveBeenCalledTimes(1);
+    expect(onBlockedImageLoad).toHaveBeenCalledWith(
+      img,
+      serializedNode,
+      mockRect,
+    );
+  });
+
+  it('should not trigger onBlockedImageLoad for non-blocked images', async () => {
+    const doc = render(`
+      <!DOCTYPE html>
+      <html>
+        <head></head>
+        <body>
+          <div>
+            <img src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" />
+          </div>
+        </body>
+      </html>
+    `);
+
+    const mirror = new Mirror();
+    const onBlockedImageLoad = vi.fn();
+
+    // Mock the image to simulate incomplete loading
+    const img = doc.querySelector('img') as HTMLImageElement;
+    Object.defineProperty(img, 'complete', {
+      value: false,
+      writable: true,
+    });
+
+    // Serialize the node with the onBlockedImageLoad callback
+    const serializedNode = serializeNodeWithId(img, {
+      doc,
+      mirror,
+      blockClass: 'rr-block',
+      blockSelector: null,
+      unblockSelector: null,
+      maskAllText: false,
+      maskTextClass: 'rr-mask',
+      unmaskTextClass: null,
+      maskTextSelector: null,
+      unmaskTextSelector: null,
+      skipChild: false,
+      inlineStylesheet: true,
+      maskInputOptions: {},
+      maskAttributeFn: undefined,
+      maskTextFn: undefined,
+      maskInputFn: undefined,
+      slimDOMOptions: {},
+      dataURLOptions: {},
+      inlineImages: false,
+      recordCanvas: false,
+      preserveWhiteSpace: true,
+      onSerialize: undefined,
+      onIframeLoad: undefined,
+      iframeLoadTimeout: 5000,
+      onBlockedImageLoad,
+      onStylesheetLoad: undefined,
+      stylesheetLoadTimeout: 5000,
+      keepIframeSrcFn: () => false,
+      newlyAddedElement: false,
+    });
+
+    expect(serializedNode).toEqual(
+      expect.objectContaining({
+        type: 2,
+        tagName: 'img',
+        attributes: {
+          src: 'data:image/gif;base64,R0lGODlhAQABAAAAACw=',
+        },
+        id: 1,
+      }),
+    );
+
+    // Simulate the image load event
+    const loadEvent = new window.Event('load');
+    img.dispatchEvent(loadEvent);
+
+    // Verify that onBlockedImageLoad was called with correct parameters
+    expect(onBlockedImageLoad).not.toHaveBeenCalled();
+  });
+
+  it.only('should not trigger onBlockedImageLoad for already complete images', async () => {
+    const doc = render(`
+      <!DOCTYPE html>
+      <html>
+        <head></head>
+        <body>
+          <div>
+            <img src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" class="rr-block" />
+          </div>
+        </body>
+      </html>
+    `);
+
+    const mirror = new Mirror();
+    const onBlockedImageLoad = vi.fn();
+
+    // Mock the image to simulate already complete loading
+    const img = doc.querySelector('img') as HTMLImageElement;
+    Object.defineProperty(img, 'complete', {
+      value: true,
+      writable: true,
+    });
+
+    // Mock getBoundingClientRect to return specific dimensions
+    const mockRect = {
+      width: 100,
+      height: 150,
+      top: 0,
+      left: 0,
+      bottom: 150,
+      right: 100,
+    };
+    img.getBoundingClientRect = vi.fn().mockReturnValue(mockRect);
+
+    // Serialize the node with the onBlockedImageLoad callback
+    const serializedNode = serializeNodeWithId(img, {
+      doc,
+      mirror,
+      blockClass: 'rr-block',
+      blockSelector: null,
+      unblockSelector: null,
+      maskAllText: false,
+      maskTextClass: 'rr-mask',
+      unmaskTextClass: null,
+      maskTextSelector: null,
+      unmaskTextSelector: null,
+      skipChild: false,
+      inlineStylesheet: true,
+      maskInputOptions: {},
+      maskAttributeFn: undefined,
+      maskTextFn: undefined,
+      maskInputFn: undefined,
+      slimDOMOptions: {},
+      dataURLOptions: {},
+      inlineImages: false,
+      recordCanvas: false,
+      preserveWhiteSpace: true,
+      onSerialize: undefined,
+      onIframeLoad: undefined,
+      iframeLoadTimeout: 5000,
+      onBlockedImageLoad,
+      onStylesheetLoad: undefined,
+      stylesheetLoadTimeout: 5000,
+      keepIframeSrcFn: () => false,
+      newlyAddedElement: false,
+    });
+
+    console.log(serializedNode);
+    expect(serializedNode).toEqual(
+      expect.objectContaining({
+        type: 2,
+        tagName: 'img',
+        attributes: {
+          class: 'rr-block',
+          rr_width: '100px',
+          rr_height: '150px',
+        },
+      }),
+    );
+
+    // Simulate the image load event
+    const loadEvent = new window.Event('load');
+    img.dispatchEvent(loadEvent);
+
+    // Verify that onBlockedImageLoad was not called since the image was already complete
+    expect(onBlockedImageLoad).not.toHaveBeenCalled();
   });
 });

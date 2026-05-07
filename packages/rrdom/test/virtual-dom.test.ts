@@ -6,17 +6,18 @@ import * as path from 'path';
 import * as puppeteer from 'puppeteer';
 import { vi } from 'vitest';
 import { JSDOM } from 'jsdom';
-import { buildNodeWithSN, Mirror } from 'rrweb-snapshot';
 import {
+  buildNodeWithSN,
   cdataNode,
   commentNode,
   documentNode,
   documentTypeNode,
   elementNode,
+  Mirror,
   NodeType,
   NodeType as RRNodeType,
   textNode,
-} from '@rrweb/types';
+} from '@sentry-internal/rrweb-snapshot';
 import {
   buildFromDom,
   buildFromNode,
@@ -243,7 +244,7 @@ describe('RRDocument for browser environment', () => {
 
     beforeAll(async () => {
       browser = await puppeteer.launch({
-        args: ['--no-sandbox', '--disable-setuid-sandbox'],
+        args: ['--no-sandbox'],
       });
       code = fs.readFileSync(
         path.resolve(__dirname, '../dist/rrdom.umd.cjs'),
@@ -285,6 +286,20 @@ describe('RRDocument for browser environment', () => {
 
     it('can build from a html containing nested shadow doms', async () => {
       await page.setContent(getHtml('shadow-dom.html'));
+      // Chrome v24+ no longer auto-parses declarative shadow DOM via setContent(),
+      // so we manually attach shadow roots from <template shadowroot> elements.
+      await page.evaluate(`
+        (function attachDeclarativeShadowRoots(root) {
+          root.querySelectorAll('template[shadowroot]').forEach(template => {
+            const mode = template.getAttribute('shadowroot');
+            const parent = template.parentNode;
+            const shadowRoot = parent.attachShadow({ mode });
+            shadowRoot.appendChild(template.content);
+            template.remove();
+            attachDeclarativeShadowRoots(shadowRoot);
+          });
+        })(document);
+      `);
       const result = await page.evaluate(`
         const doc = new rrdom.RRDocument();
         rrdom.buildFromDom(document, undefined, doc);

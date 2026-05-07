@@ -9,14 +9,17 @@ import {
   EventType,
   IncrementalSource,
   CanvasContext,
-} from '@rrweb/types';
+} from '@sentry-internal/rrweb-types';
 import {
   assertSnapshot,
   launchPuppeteer,
   stripBase64,
   waitForRAF,
+  waitForIFrameLoad,
+  waitForTimeout,
 } from '../utils';
-import type { ICanvas } from 'rrweb-snapshot';
+import type { ICanvas } from '@sentry-internal/rrweb-snapshot';
+import type { CanvasManager } from '../../src/record/observers/canvas/canvas-manager';
 
 interface ISuite {
   code: string;
@@ -31,6 +34,7 @@ interface IWindow extends Window {
       options: recordOptions<eventWithTime>,
     ) => listenerHandler | undefined;
     addCustomEvent<T>(tag: string, payload: T): void;
+    CanvasManager: typeof CanvasManager;
   };
   emit: (e: eventWithTime) => undefined;
 }
@@ -64,9 +68,10 @@ const setup = function (
     ctx.page.on('console', (msg) => console.log('PAGE LOG:', msg.text()));
 
     await ctx.page.evaluate((canvasSample) => {
-      const { record } = (window as unknown as IWindow).rrweb;
+      const { record, CanvasManager } = (window as unknown as IWindow).rrweb;
       record({
         recordCanvas: true,
+        getCanvasManager: (options) => new CanvasManager(options),
         sampling: {
           canvas: canvasSample,
         },
@@ -109,7 +114,7 @@ describe('record webgl', function (this: ISuite) {
       gl.clear(gl.COLOR_BUFFER_BIT);
     });
 
-    await ctx.page.waitForTimeout(50);
+    await waitForTimeout(50);
 
     const lastEvent = ctx.events[ctx.events.length - 1];
     expect(lastEvent).toMatchObject({
@@ -135,7 +140,7 @@ describe('record webgl', function (this: ISuite) {
       gl.clear(gl.COLOR_BUFFER_BIT);
     });
 
-    await ctx.page.waitForTimeout(50);
+    await waitForTimeout(50);
 
     const lastEvent = ctx.events[ctx.events.length - 1];
     expect(lastEvent).toMatchObject({
@@ -201,7 +206,7 @@ describe('record webgl', function (this: ISuite) {
       gl.linkProgram(program1);
     });
 
-    await ctx.page.waitForTimeout(50);
+    await waitForTimeout(50);
 
     await assertSnapshot(ctx.events);
   });
@@ -217,7 +222,7 @@ describe('record webgl', function (this: ISuite) {
       gl.linkProgram(program0);
     });
 
-    await ctx.page.waitForTimeout(50);
+    await waitForTimeout(50);
 
     await assertSnapshot(ctx.events);
   });
@@ -262,7 +267,7 @@ describe('record webgl', function (this: ISuite) {
       });
     });
 
-    await ctx.page.waitForTimeout(50);
+    await waitForTimeout(50);
 
     await assertSnapshot(ctx.events);
     expect(ctx.events.length).toEqual(5);
@@ -297,7 +302,7 @@ describe('record webgl', function (this: ISuite) {
         gl.clear(gl.COLOR_BUFFER_BIT);
       });
 
-      await ctx.page.waitForTimeout(200); // give it some time buffer
+      await waitForTimeout(200); // give it some time buffer
 
       await ctx.page.evaluate(() => {
         const canvas = document.getElementById('canvas') as HTMLCanvasElement;
@@ -307,12 +312,66 @@ describe('record webgl', function (this: ISuite) {
         gl.clear(gl.COLOR_BUFFER_BIT);
       });
 
-      await ctx.page.waitForTimeout(200);
+      await waitForTimeout(200);
 
       await waitForRAF(ctx.page);
 
       // should yield a frame for each change at a max of 60fps
       await assertSnapshot(stripBase64(ctx.events));
+    });
+  });
+
+  describe('record canvas within iframe', function (this: ISuite) {
+    vi.setConfig({ testTimeout: 10_000 });
+
+    const ctx: ISuite = setup.call(
+      this,
+      `
+      <!DOCTYPE html>
+      <html>
+        <body>
+          <iframe id="iframe1"></iframe>
+        </body>
+      </html>
+    `,
+    );
+
+    it('will record changes to a canvas element', async () => {
+      await ctx.page.evaluate(() => {
+        const iframe = document.getElementById('iframe1') as HTMLIFrameElement;
+        const doc = iframe.contentDocument!;
+        const canvas = doc.createElement('canvas');
+        canvas.id = 'canvas';
+        doc.body.appendChild(canvas);
+      });
+
+      await waitForTimeout(50);
+
+      await ctx.page.evaluate(() => {
+        const iframe = document.getElementById('iframe1') as HTMLIFrameElement;
+        const canvas = iframe.contentDocument!.getElementById(
+          'canvas',
+        ) as HTMLCanvasElement;
+        const gl = canvas.getContext('webgl')!;
+
+        gl.clear(gl.COLOR_BUFFER_BIT);
+      });
+      await waitForTimeout(50);
+
+      const lastEvent = ctx.events[ctx.events.length - 1];
+      expect(lastEvent).toMatchObject({
+        data: {
+          source: IncrementalSource.CanvasMutation,
+          type: CanvasContext.WebGL,
+          commands: [
+            {
+              args: [16384],
+              property: 'clear',
+            },
+          ],
+        },
+      });
+      assertSnapshot(stripBase64(ctx.events));
     });
   });
 });

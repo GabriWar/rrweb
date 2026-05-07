@@ -1,8 +1,41 @@
 <p align="center">
+  <a href="https://sentry.io/?utm_source=github&utm_medium=logo" target="_blank">
+    <img src="https://sentry-brand.storage.googleapis.com/sentry-wordmark-dark-280x84.png" alt="Sentry" width="280" height="84">
+  </a>
+</p>
+
+# Sentry rrweb Fork
+
+This repo is a fork of [rrweb](https://github.com/rrweb-io/rrweb). The purpose is to apply patches and bugfixes to rrweb and release Sentry-internal packages with our patches included. All credits and attribution for rrweb go to the original creators of the library and all its contributors.
+
+From this monorepo, Sentry maintains and publishes the following NPM packages:
+
+- `@sentry-internal/rrweb` (corresponds to the [original `rrweb` package](https://www.npmjs.com/package/rrweb))
+- `@sentry-internal/rrdom` (corresponds to the [original `rrdom` package](https://www.npmjs.com/package/rrdom))
+- `@sentry-internal/rrweb-player` (corresponds to the [original `rrweb-player` package](https://www.npmjs.com/package/rrweb-player))
+- `@sentry-internal/rrweb-snapshot` (corresponds to the [original `rrweb-snapshot` package](https://www.npmjs.com/package/rrweb-snapshot))
+- `@sentry-internal/rrweb-types` (corresponds to the [original `@rrweb/types` package](https://www.npmjs.com/package/@rrweb/types))
+- `@sentry-internal/rrweb-worker` (new package)
+
+## Major changes from upstream branch
+
+Apart from some small fixes/changes in this fork, these are the main relevant changes compared to the upstream rrweb repository:
+
+- Removed `hooks` related code, so passing `hooks: myHooks` to `record()` will have no effect
+- Removed `plugins` related code, so passing `plugins: myPlugins` to `record()` will have no effect
+- Added build flags to allow to disable iframe, canvas & shadow dom recording (in order to get bundle size optimizations)
+- Remove canvas support by default - you have to pass `getCanvasManager` into the `record` method manually
+
+# rrweb
+
+<p align="center">
   <img width="100px" height="100px" src="https://www.rrweb.io/favicon.png">
 </p>
 <p align="center">
-  <a href="https://www.rrweb.io/" style="font-weight: bold">Try rrweb</a>
+  <a href="https://github.com/rrweb-io/rrweb" style="font-weight: bold">Check out the original rrweb Repo</a>
+</p>
+<p align="center">
+  <a href="https://rrweb.io" style="font-weight: bold">rrweb.io</a>
 </p>
 
 # rrweb
@@ -12,8 +45,8 @@
 [![Join the chat at slack](https://img.shields.io/badge/slack-@rrweb-teal.svg?logo=slack)](https://join.slack.com/t/rrweb/shared_invite/zt-siwoc6hx-uWay3s2wyG8t5GpZVb8rWg)
 [![Twitter Follow](https://img.shields.io/badge/twitter-@rrweb__io-teal.svg?logo=twitter)](https://twitter.com/rrweb_io)
 [![Reddit](https://img.shields.io/badge/reddit-r/rrweb-teal.svg?logo=reddit)](https://www.reddit.com/r/rrweb)
-![recorder gzip size](https://img.badgesize.io/https://cdn.jsdelivr.net/npm/@rrweb/record@latest/umd/record.min.js?compression=gzip&label=recorder%20gzip%20size&max=200000&softmax=100000)
-![replayer gzip size](https://img.badgesize.io/https://cdn.jsdelivr.net/npm/@rrweb/replay@latest/umd/replay.min.js?compression=gzip&label=replayer%20gzip%20size&max=200000&softmax=100000)
+![recorder gzip size](https://img.badgesize.io/https://cdn.jsdelivr.net/npm/@rrweb/record@latest/dist/record.min.js?compression=gzip&label=recorder%20gzip%20size&max=200000&softmax=100000)
+![replayer gzip size](https://img.badgesize.io/https://cdn.jsdelivr.net/npm/@rrweb/replay@latest/dist/replay.min.js?compression=gzip&label=replayer%20gzip%20size&max=200000&softmax=100000)
 [![](https://data.jsdelivr.com/v1/package/npm/rrweb/badge)](https://www.jsdelivr.com/package/npm/rrweb)
 
 [中文文档](./README.zh_CN.md)
@@ -63,7 +96,7 @@ Since we want the record and replay sides to share a strongly typed data structu
 
 1. Fork this repository.
 2. Run `yarn install` in the root to install required dependencies for all sub-packages (note: `npm install` is _not_ recommended).
-3. Run `yarn build:all` to build all packages and get a stable base, then `yarn dev` in the root to get auto-building for all the sub-packages whenever you modify anything.
+3. Run `yarn dev` in the root to get auto-building for all the sub-packages whenever you modify anything.
 4. Navigate to one of the sub-packages (in the `packages` folder) where you'd like to make a change.
 5. Patch the code and run `yarn test` to run the tests, make sure they pass before you commit anything. Add test cases in order to avoid future regression.
 6. If tests are failing, but the change in output is desirable, run `yarn test:update` and carefully commit the changes in test output.

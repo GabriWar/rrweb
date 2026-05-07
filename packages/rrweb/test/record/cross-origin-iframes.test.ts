@@ -7,8 +7,8 @@ import type {
   listenerHandler,
   eventWithTime,
   mutationData,
-} from '@rrweb/types';
-import { EventType, IncrementalSource } from '@rrweb/types';
+} from '@sentry-internal/rrweb-types';
+import { EventType, IncrementalSource } from '@sentry-internal/rrweb-types';
 import {
   assertSnapshot,
   getServerURL,
@@ -17,6 +17,7 @@ import {
   waitForRAF,
 } from '../utils';
 import type * as http from 'http';
+import type { CanvasManager } from '../../src/record/observers/canvas/canvas-manager';
 
 interface ISuite {
   code: string;
@@ -34,6 +35,7 @@ interface IWindow extends Window {
     ) => listenerHandler | undefined;
     addCustomEvent<T>(tag: string, payload: T): void;
     pack: (e: eventWithTime) => string;
+    CanvasManager: typeof CanvasManager;
   };
   emit: (e: eventWithTime) => undefined;
   snapshots: eventWithTime[];
@@ -53,21 +55,19 @@ async function injectRecordScript(
   } catch (e) {
     // we get this error: `Protocol error (DOM.resolveNode): Node with given id does not belong to the document`
     // then the page wasn't loaded yet and we try again
-    if (
-      !e.message.includes('DOM.resolveNode') &&
-      !e.message.includes('DOM.describeNode')
-    )
-      throw e;
+    if (!e.message.includes('DOM.resolveNode')) throw e;
     await injectRecordScript(frame, options);
     return;
   }
   options = options || {};
   await frame.evaluate((options) => {
     (window as unknown as IWindow).snapshots = [];
-    const { record } = (window as unknown as IWindow).rrweb;
+    const { record, pack, CanvasManager } = (window as unknown as IWindow)
+      .rrweb;
     const config: recordOptions<eventWithTime> = {
       recordCrossOriginIframes: true,
       recordCanvas: true,
+      getCanvasManager: (options) => new CanvasManager(options),
       emit(event) {
         (window as unknown as IWindow).snapshots.push(event);
         (window as unknown as IWindow).emit(event);
@@ -104,11 +104,6 @@ const setup = function (
 
   beforeEach(async () => {
     ctx.page = await ctx.browser.newPage();
-    await ctx.page.goto('about:blank');
-    await ctx.page.setContent(
-      content.replace(/\{SERVER_URL\}/g, ctx.serverURL),
-    );
-    // await ctx.page.evaluate(ctx.code);
     ctx.events = [];
     await ctx.page.exposeFunction('emit', (e: eventWithTime) => {
       if (e.type === EventType.DomContentLoaded || e.type === EventType.Load) {
@@ -118,6 +113,12 @@ const setup = function (
     });
 
     ctx.page.on('console', (msg) => console.log('PAGE LOG:', msg.text()));
+    await ctx.page.goto(ctx.serverBURL);
+    await ctx.page.setContent(
+      content.replace(/\{SERVER_URL\}/g, ctx.serverURL),
+      { waitUntil: 'load' },
+    );
+    // await ctx.page.evaluate(ctx.code);
     await injectRecordScript(ctx.page.mainFrame(), options);
   });
 
@@ -213,22 +214,15 @@ describe('cross origin iframes', function (this: ISuite) {
     it('should replace the existing DOM nodes on iframe navigation with `isAttachIframe`', async () => {
       await ctx.page.evaluate((url) => {
         const iframe = document.querySelector('iframe') as HTMLIFrameElement;
-        iframe.src = `${url}/html/empty.html`;
+        iframe.src = `${url}/html/form.html?2`;
       }, ctx.serverURL);
-      await waitForRAF(ctx.page); // should load iframe (but sometimes doesn't)
-      const frame = ctx.page.mainFrame().childFrames()[0];
-      await frame.waitForSelector('#one'); // ensure frame has changed
+      await waitForRAF(ctx.page); // loads iframe
 
       await injectRecordScript(ctx.page.mainFrame().childFrames()[0]); // injects script into new iframe
 
       const events: eventWithTime[] = await ctx.page.evaluate(
         () => (window as unknown as IWindow).snapshots,
       );
-
-      // for future detailed debugging of this test, the full output is available
-      // 'out of band' in test/record/__snapshots__/cross-origin-iframes.test.ts.snap.extra
-      // assertSnapshot(events);
-
       expect(
         (events[events.length - 1].data as mutationData).removes,
       ).toMatchObject([]);
@@ -239,6 +233,7 @@ describe('cross origin iframes', function (this: ISuite) {
 
     it('should map input events correctly', async () => {
       const frame = ctx.page.mainFrame().childFrames()[0];
+      await frame.waitForSelector('input[type="text"]');
       await frame.type('input[type="text"]', 'test');
       await frame.click('input[type="radio"]');
       await frame.click('input[type="checkbox"]');
@@ -246,10 +241,7 @@ describe('cross origin iframes', function (this: ISuite) {
       await frame.type('textarea', 'textarea test');
       await frame.select('select', '1');
 
-      const snapshots = (await ctx.page.evaluate(
-        'window.snapshots',
-      )) as eventWithTime[];
-      await assertSnapshot(snapshots);
+      await assertSnapshot(ctx.page);
     });
 
     it('should map scroll events correctly', async () => {
@@ -272,7 +264,7 @@ describe('cross origin iframes', function (this: ISuite) {
       const snapshots = (await ctx.page.evaluate(
         'window.snapshots',
       )) as eventWithTime[];
-      await assertSnapshot(snapshots);
+      assertSnapshot(snapshots, { includeScroll: true });
     });
   });
 
@@ -300,7 +292,7 @@ describe('cross origin iframes', function (this: ISuite) {
       const snapshots = (await ctx.page.evaluate(
         'window.snapshots',
       )) as eventWithTime[];
-      await assertSnapshot(snapshots);
+      assertSnapshot(snapshots);
     });
 
     it('should record DOM node removal', async () => {
@@ -312,7 +304,7 @@ describe('cross origin iframes', function (this: ISuite) {
       const snapshots = (await ctx.page.evaluate(
         'window.snapshots',
       )) as eventWithTime[];
-      await assertSnapshot(snapshots);
+      assertSnapshot(snapshots);
     });
 
     it('should record DOM attribute changes', async () => {
@@ -324,11 +316,12 @@ describe('cross origin iframes', function (this: ISuite) {
       const snapshots = (await ctx.page.evaluate(
         'window.snapshots',
       )) as eventWithTime[];
-      await assertSnapshot(snapshots);
+      assertSnapshot(snapshots);
     });
 
     it('should record DOM text changes', async () => {
       const frame = ctx.page.mainFrame().childFrames()[0];
+      await frame.waitForSelector('b');
       await frame.evaluate(() => {
         const b = document.querySelector('b')!;
         b.childNodes[0].textContent = 'replaced text';
@@ -336,7 +329,7 @@ describe('cross origin iframes', function (this: ISuite) {
       const snapshots = (await ctx.page.evaluate(
         'window.snapshots',
       )) as eventWithTime[];
-      await assertSnapshot(snapshots);
+      assertSnapshot(snapshots);
     });
 
     it('should record canvas elements', async () => {
@@ -353,7 +346,7 @@ describe('cross origin iframes', function (this: ISuite) {
       const snapshots = (await ctx.page.evaluate(
         'window.snapshots',
       )) as eventWithTime[];
-      await assertSnapshot(snapshots);
+      assertSnapshot(snapshots);
     });
 
     it('should record custom events', async () => {
@@ -369,7 +362,7 @@ describe('cross origin iframes', function (this: ISuite) {
       const snapshots = (await ctx.page.evaluate(
         'window.snapshots',
       )) as eventWithTime[];
-      await assertSnapshot(snapshots);
+      assertSnapshot(snapshots);
     });
 
     it('captures mutations on adopted stylesheets', async () => {
@@ -432,7 +425,7 @@ describe('cross origin iframes', function (this: ISuite) {
       const snapshots = (await ctx.page.evaluate(
         'window.snapshots',
       )) as eventWithTime[];
-      await assertSnapshot(snapshots);
+      assertSnapshot(snapshots);
     });
 
     it('captures mutations on stylesheets', async () => {
@@ -487,7 +480,7 @@ describe('cross origin iframes', function (this: ISuite) {
       const snapshots = (await ctx.page.evaluate(
         'window.snapshots',
       )) as eventWithTime[];
-      await assertSnapshot(snapshots);
+      assertSnapshot(snapshots);
     });
   });
 
@@ -508,6 +501,7 @@ describe('cross origin iframes', function (this: ISuite) {
 
     it('should emit contents of iframe once', async () => {
       const frame = ctx.page.mainFrame().childFrames()[0];
+      await frame.waitForSelector('audio');
       await frame.evaluate(() => {
         const el = document.querySelector('audio')!;
         el.play();
@@ -516,7 +510,7 @@ describe('cross origin iframes', function (this: ISuite) {
       const snapshots = (await ctx.page.evaluate(
         'window.snapshots',
       )) as eventWithTime[];
-      await assertSnapshot(snapshots);
+      assertSnapshot(snapshots);
     });
   });
 
@@ -548,7 +542,7 @@ describe('cross origin iframes', function (this: ISuite) {
       const snapshots = (await ctx.page.evaluate(
         'window.snapshots',
       )) as eventWithTime[];
-      await assertSnapshot(snapshots);
+      assertSnapshot(snapshots);
     });
 
     it('should filter out forwarded cross origin rrweb messages', async () => {
@@ -566,8 +560,11 @@ describe('cross origin iframes', function (this: ISuite) {
       }, iframe2URL);
 
       // Wait for iframe2 to load
-      await ctx.page.waitForFrame(iframe2URL);
-      const iframe2 = frame.childFrames()[0];
+      const iframe2 = await ctx.page.waitForFrame(
+        (f) => f.url() === iframe2URL,
+      );
+      // Wait for iframe2's DOM to be ready
+      await iframe2.waitForSelector('body');
       // Record iframe2
       await injectRecordScript(iframe2);
 
@@ -575,7 +572,7 @@ describe('cross origin iframes', function (this: ISuite) {
       const snapshots = (await ctx.page.evaluate(
         'window.snapshots',
       )) as eventWithTime[];
-      await assertSnapshot(snapshots);
+      assertSnapshot(snapshots);
     });
   });
 });
@@ -603,7 +600,7 @@ describe('same origin iframes', function (this: ISuite) {
     // two events (full snapshot + meta) from main frame,
     // and two (full snapshot + mutation) from iframe
     expect(events.length).toBe(4);
-    await assertSnapshot(events);
+    assertSnapshot(events);
   });
 
   it('should record cross-origin iframe in same-origin iframe', async () => {
@@ -627,6 +624,6 @@ describe('same origin iframes', function (this: ISuite) {
     const snapshots = (await ctx.page.evaluate(
       'window.snapshots',
     )) as eventWithTime[];
-    await assertSnapshot(snapshots);
+    assertSnapshot(snapshots);
   });
 });

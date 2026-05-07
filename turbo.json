@@ -4,13 +4,12 @@
   "globalDependencies": [
     ".eslintrc.js",
     ".prettierrc",
-    "vite.config.default.ts",
+    "vite.config.defaults.ts",
     "tsconfig.json"
   ],
-  "globalPassThroughEnv": ["PUPPETEER_HEADLESS", "DISABLE_WORKER_INLINING"],
   "tasks": {
-    "prepublish": {
-      "dependsOn": ["^prepublish", "//#references:update"],
+    "prepack": {
+      "dependsOn": ["^prepack"],
       "outputs": [
         "lib/**",
         "es/**",
@@ -21,30 +20,28 @@
       ]
     },
     "test": {
-      "dependsOn": ["^prepublish"]
+      "dependsOn": ["^prepack"],
+      "passThroughEnv": ["PUPPETEER_HEADLESS"]
     },
     "test:watch": {
       "persistent": true,
-      "cache": false
+      "passThroughEnv": ["PUPPETEER_HEADLESS"]
     },
     "test:update": {
-      "dependsOn": ["^prepublish"]
+      "dependsOn": ["^prepack"],
+      "passThroughEnv": ["PUPPETEER_HEADLESS"]
     },
     "dev": {
-      "dependsOn": ["prepublish", "^prepublish"],
+      // "dependsOn": ["^prepack"],
       "persistent": true,
-      "cache": false
+      "cache": false,
+      "passThroughEnv": ["CLEAR_DIST_DIR"]
+    },
+    "build:tarball": {
+      "dependsOn": ["prepack"]
     },
     "lint": {},
-    "check-types": {
-      "dependsOn": ["^prepublish"]
-    },
-    "//#references:update": {
-      "inputs": ["packages/*/package.json", "packages/plugins/*/package.json"],
-      "outputs": [
-        "packages/*/tsconfig.json",
-        "packages/plugins/*/tsconfig.json"
-      ]
-    }
+    "typings": {},
+    "check-types": {}
   }
 }

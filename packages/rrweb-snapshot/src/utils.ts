@@ -131,6 +131,24 @@ export function stringifyStylesheet(s: CSSStyleSheet): string | null {
   }
 }
 
+/**
+ * There is a bug in chrome (https://issues.chromium.org/issues/41416124) with the `all` property where we can't use `cssText` because it is wrong.
+ * Instead, attempt to serialize the css string using `CSSStyleDeclaration`.
+ */
+export function fixAllCssProperty(rule: CSSStyleRule) {
+  let styles = '';
+  for (let i = 0; i < rule.style.length; i++) {
+    const styleDeclaration = rule.style;
+    const attribute = styleDeclaration[i];
+    const isImportant = styleDeclaration.getPropertyPriority(attribute);
+    styles += `${attribute}:${styleDeclaration.getPropertyValue(attribute)}${
+      isImportant ? ` !important` : ''
+    };`;
+  }
+
+  return `${rule.selectorText} { ${styles} }`;
+}
+
 export function stringifyRule(rule: CSSRule, sheetHref: string | null): string {
   if (isCSSImportRule(rule)) {
     let importStringified;
@@ -149,13 +167,32 @@ export function stringifyRule(rule: CSSRule, sheetHref: string | null): string {
       return absolutifyURLs(importStringified, rule.styleSheet.href);
     }
     return importStringified;
-  } else {
-    let ruleStringified = rule.cssText;
-    if (isCSSStyleRule(rule) && rule.selectorText.includes(':')) {
+  } else if (isCSSStyleRule(rule)) {
+    let cssText = rule.cssText;
+    const needsSafariColonFix = rule.selectorText.includes(':');
+    const needsAllFix =
+      typeof rule.style['all'] === 'string' && rule.style['all'];
+
+    if (needsAllFix) {
+      cssText = fixAllCssProperty(rule);
+    }
+
+    if (needsSafariColonFix) {
       // Safari does not escape selectors with : properly
       // see https://bugs.webkit.org/show_bug.cgi?id=184604
-      ruleStringified = fixSafariColons(ruleStringified);
+      //
+      // This needs to be after `fixAllCssProperty()` which requires a
+      // `CssStylRule` and generates a string (i.e. `cssText`) and the below
+      // operates on `cssText`
+      cssText = fixSafariColons(cssText);
     }
+
+    if (sheetHref) {
+      return absolutifyURLs(cssText, sheetHref);
+    }
+    return cssText;
+  } else {
+    let ruleStringified = rule.cssText;
     if (sheetHref) {
       return absolutifyURLs(ruleStringified, sheetHref);
     }
@@ -247,39 +284,58 @@ export function createMirror(): Mirror {
   return new Mirror();
 }
 
-export function maskInputValue({
-  element,
+export function shouldMaskInput({
   maskInputOptions,
   tagName,
   type,
+}: {
+  maskInputOptions: MaskInputOptions;
+  tagName: Uppercase<string>;
+  type: Lowercase<string> | null;
+}): boolean {
+  // Handle `option` like `select
+  if (tagName === 'OPTION') {
+    tagName = 'SELECT';
+  }
+  return Boolean(
+    maskInputOptions[tagName.toLowerCase() as keyof MaskInputOptions] ||
+      (type && maskInputOptions[type as keyof MaskInputOptions]) ||
+      type === 'password' ||
+      // Default to "text" option for inputs without a "type" attribute defined
+      (tagName === 'INPUT' && !type && maskInputOptions['text']),
+  );
+}
+
+export function maskInputValue({
+  isMasked,
+  element,
   value,
   maskInputFn,
 }: {
+  isMasked: boolean;
   element: HTMLElement;
-  maskInputOptions: MaskInputOptions;
-  tagName: string;
-  type: string | null;
   value: string | null;
   maskInputFn?: MaskInputFn;
 }): string {
   let text = value || '';
-  const actualType = type && toLowerCase(type);
 
-  if (
-    maskInputOptions[tagName.toLowerCase() as keyof MaskInputOptions] ||
-    (actualType && maskInputOptions[actualType as keyof MaskInputOptions])
-  ) {
-    if (maskInputFn) {
-      text = maskInputFn(text, element);
-    } else {
-      text = '*'.repeat(text.length);
-    }
+  if (!isMasked) {
+    return text;
   }
-  return text;
+
+  if (maskInputFn) {
+    text = maskInputFn(text, element);
+  }
+
+  return '*'.repeat(text.length);
 }
 
 export function toLowerCase<T extends string>(str: T): Lowercase<T> {
   return str.toLowerCase() as unknown as Lowercase<T>;
+}
+
+export function toUpperCase<T extends string>(str: T): Uppercase<T> {
+  return str.toUpperCase() as unknown as Uppercase<T>;
 }
 
 const ORIGINAL_ATTRIBUTE_NAME = '__rrweb_original__';
@@ -365,6 +421,24 @@ export function getInputType(element: HTMLElement): Lowercase<string> | null {
     ? // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion
       toLowerCase(type)
     : null;
+}
+
+export function getInputValue(
+  el:
+    | HTMLInputElement
+    | HTMLTextAreaElement
+    | HTMLSelectElement
+    | HTMLOptionElement,
+  tagName: Uppercase<string>,
+  type: Lowercase<string> | null,
+): string {
+  if (tagName === 'INPUT' && (type === 'radio' || type === 'checkbox')) {
+    // checkboxes & radio buttons return `on` as their el.value when no value is specified
+    // we only want to get the value if it is specified as `value='xxx'`
+    return el.getAttribute('value') || '';
+  }
+
+  return el.value;
 }
 
 /**
@@ -593,4 +667,95 @@ export function markCssSplits(
   style: HTMLStyleElement,
 ): string {
   return splitCssText(cssText, style).join('/* rr_split */');
+}
+
+/**
+ * We generally want to use window.requestAnimationFrame / window.setTimeout / window.clearTimeout.
+ * However, in some cases this may be wrapped (e.g. by Zone.js for Angular),
+ * so we try to get an unpatched version of this from a sandboxed iframe.
+ *
+ * TODO(sentry): This is duplicated from rrweb utils, ideally we extract this to a new package.
+ */
+
+interface CacheableImplementations {
+  requestAnimationFrame: typeof requestAnimationFrame;
+  setTimeout: typeof setTimeout;
+  clearTimeout: typeof clearTimeout;
+}
+
+const cachedImplementations: Partial<CacheableImplementations> = {};
+
+function getImplementation<T extends keyof CacheableImplementations>(
+  name: T,
+): CacheableImplementations[T] {
+  const cached = cachedImplementations[name];
+  if (cached) {
+    return cached;
+  }
+
+  const document = window.document;
+  let impl = window[name] as CacheableImplementations[T];
+  if (document && typeof document.createElement === 'function') {
+    try {
+      const sandbox = document.createElement('iframe');
+      sandbox.hidden = true;
+      document.head.appendChild(sandbox);
+      const contentWindow = sandbox.contentWindow;
+      if (contentWindow && contentWindow[name]) {
+        impl =
+          // eslint-disable-next-line @typescript-eslint/unbound-method
+          contentWindow[name] as CacheableImplementations[T];
+      }
+      document.head.removeChild(sandbox);
+    } catch (e) {
+      // Could not create sandbox iframe, just use window.xxx
+    }
+  }
+
+  return (cachedImplementations[name] = impl.bind(
+    window,
+  ) as CacheableImplementations[T]);
+}
+
+export function onRequestAnimationFrame(
+  ...rest: Parameters<typeof requestAnimationFrame>
+): ReturnType<typeof requestAnimationFrame> {
+  return getImplementation('requestAnimationFrame')(...rest);
+}
+
+export function setTimeout(
+  ...rest: Parameters<typeof window.setTimeout>
+): ReturnType<typeof window.setTimeout> {
+  return getImplementation('setTimeout')(...rest);
+}
+
+export function clearTimeout(
+  ...rest: Parameters<typeof window.clearTimeout>
+): ReturnType<typeof window.clearTimeout> {
+  return getImplementation('clearTimeout')(...rest);
+}
+
+/**
+ * Get the content document of an iframe.
+ * Catching errors is necessary because some older browsers block access to the content document of a sandboxed iframe.
+ */
+export function getIFrameContentDocument(iframe?: HTMLIFrameElement) {
+  try {
+    return (iframe as HTMLIFrameElement).contentDocument;
+  } catch {
+    // noop
+  }
+}
+
+/**
+ * Get the content window of an iframe.
+ * Catching errors is necessary because iOS 18.5 Safari WebView throws SecurityError
+ * when accessing contentWindow on cross-origin iframes (instead of returning null).
+ */
+export function getIFrameContentWindow(iframe?: HTMLIFrameElement) {
+  try {
+    return (iframe as HTMLIFrameElement).contentWindow;
+  } catch {
+    // noop
+  }
 }

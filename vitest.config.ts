@@ -9,11 +9,10 @@ export default {
       escapeString: true,
       printBasicPrototype: true,
     },
-    /**
-     * Use forks instead of threads for Vite 6 compatibility
-     * Vite 6 has issues with worker threads not cleaning up properly
-     * causing tests to hang indefinitely
-     */
+    // Vitest 2 defaults to worker threads, but Puppeteer browser instances
+    // don't clean up reliably in threads, causing CI hangs. Use forks
+    // (child processes) which match vitest 1 behavior.
     pool: 'forks',
+    teardownTimeout: 5000,
   },
 };

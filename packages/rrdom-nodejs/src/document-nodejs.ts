@@ -1,4 +1,5 @@
-import { NodeType as RRNodeType } from '@rrweb/types';
+/* eslint-disable @typescript-eslint/no-unsafe-assignment */
+import { NodeType as RRNodeType } from '@sentry-internal/rrweb-snapshot';
 import type { NWSAPI } from 'nwsapi';
 import type { CSSStyleDeclaration as CSSStyleDeclarationType } from 'cssstyle';
 import {
@@ -11,9 +12,9 @@ import {
   BaseRRNode,
   BaseRRText,
   ClassList,
-  type IRRDocument,
-  type CSSStyleDeclaration,
-} from 'rrdom';
+  IRRDocument,
+  CSSStyleDeclaration,
+} from '@sentry-internal/rrdom';
 // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-var-requires
 const nwsapi = require('nwsapi');
 // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-var-requires
@@ -344,7 +345,7 @@ export class RRStyleElement extends RRElement {
       for (const child of this.childNodes)
         if (child.RRNodeType === RRNodeType.Text)
           result += (child as RRText).textContent;
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-assignment
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-call
       this._sheet = cssom.parse(result);
     }
     return this._sheet;

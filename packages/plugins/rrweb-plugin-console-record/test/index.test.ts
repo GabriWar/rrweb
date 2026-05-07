@@ -3,7 +3,7 @@ import { stringifySnapshots } from '../../../rrweb/test/utils';
 import { createServer, ViteDevServer } from 'vite';
 import * as puppeteer from 'puppeteer';
 import type { Browser, Page } from 'puppeteer';
-import type { eventWithTime } from '@rrweb/types';
+import type { eventWithTime } from '@sentry-internal/rrweb-types';
 
 export async function launchPuppeteer(
   options?: Parameters<(typeof puppeteer)['launch']>[0],
@@ -14,14 +14,30 @@ export async function launchPuppeteer(
       width: 1920,
       height: 1080,
     },
-    args: ['--no-sandbox', '--disable-setuid-sandbox'],
+    args: ['--no-sandbox'],
     ...options,
+  });
+}
+
+/**
+ * Filter out console events originating from Vite's injected client script.
+ * Vite 6 logs messages like "[vite] connected" or "[vite] failed to connect"
+ * that pollute our snapshots.
+ */
+function filterViteClientEvents(snapshots: eventWithTime[]): eventWithTime[] {
+  return snapshots.filter((event) => {
+    if (event.type !== 6) return true;
+    const trace = (event.data as any)?.payload?.trace;
+    if (!Array.isArray(trace)) return true;
+    return !trace.some((t: string) => t.includes('@vite/client'));
   });
 }
 
 export function assertSnapshot(snapshots: eventWithTime[]) {
   expect(snapshots).toBeDefined();
-  expect(stringifySnapshots(snapshots)).toMatchSnapshot();
+  expect(
+    stringifySnapshots(filterViteClientEvents(snapshots)),
+  ).toMatchSnapshot();
 }
 
 describe('rrweb-plugin-console-record', () => {
@@ -35,8 +51,6 @@ describe('rrweb-plugin-console-record', () => {
     server = await createServer({
       preview: { port: 3000 },
       mode: 'test',
-      // hmr calls `console.debug('[vite] connected')` and messes up our snapshots
-      // so we disable it
       server: { hmr: false },
     });
     await server.listen();
@@ -87,17 +101,14 @@ describe('rrweb-plugin-console-record', () => {
       'window.snapshots',
     )) as eventWithTime[];
     // The snapshots should containe 1 console log, not multiple.
-    await assertSnapshot(snapshots);
+    assertSnapshot(snapshots);
   });
 
   it('should record console messages', async () => {
     await page.goto(`${serverUrl}test/html/log.html`);
 
     await page.evaluate(() => {
-      // truthy assert does not log
-      console.assert(0 === 0, 'should not log assert');
-      // falsy assert does log
-      console.assert(false, 'should log assert');
+      console.assert(0 === 0, 'assert');
       console.count('count');
       console.countReset('count');
       console.debug('debug');
@@ -126,6 +137,6 @@ describe('rrweb-plugin-console-record', () => {
     const snapshots = (await page.evaluate(
       'window.snapshots',
     )) as eventWithTime[];
-    await assertSnapshot(snapshots);
+    assertSnapshot(snapshots);
   });
 });

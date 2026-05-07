@@ -10,31 +10,29 @@ import {
   sampleStyleSheetRemoveEvents as stylesheetRemoveEvents,
   sampleRemoteStyleSheetEvents as remoteStyleSheetEvents,
   waitForRAF,
+  waitForTimeout,
 } from './utils';
 import styleSheetRuleEvents from './events/style-sheet-rule-events';
+import movingStyleSheetOnDiff from './events/moving-style-sheet-on-diff';
 import orderingEvents from './events/ordering';
+import touchAllPointerEvents from './events/touch-all-pointer-id';
+import touchSomePointerEvents from './events/touch-some-pointer-id';
+import mouseEvents from './events/mouse';
 import scrollEvents from './events/scroll';
+import isSyncTapEvents from './events/is-sync-tap';
 import scrollWithParentStylesEvents from './events/scroll-with-parent-styles';
 import inputEvents from './events/input';
 import iframeEvents from './events/iframe';
 import selectionEvents from './events/selection';
 import shadowDomEvents from './events/shadow-dom';
-import badTextareaEvents from './events/bad-textarea';
-import badStyleEvents from './events/bad-style';
 import StyleSheetTextMutation from './events/style-sheet-text-mutation';
 import canvasInIframe from './events/canvas-in-iframe';
 import adoptedStyleSheet from './events/adopted-style-sheet';
 import adoptedStyleSheetModification from './events/adopted-style-sheet-modification';
-import {
-  emptyReplaceSyncEvents,
-  emptyReplaceEvents,
-} from './events/adopted-style-sheet-empty-replace';
-import nestedStyleDeclarationEvents from './events/nested-style-declaration';
-import styleDeclarationMissingRuleEvents from './events/style-declaration-missing-rule';
 import documentReplacementEvents from './events/document-replacement';
 import hoverInIframeShadowDom from './events/iframe-shadowdom-hover';
 import customElementDefineClass from './events/custom-element-define-class';
-import { ReplayerEvents } from '@rrweb/types';
+import { ReplayerEvents } from '@sentry-internal/rrweb-types';
 
 interface ISuite {
   code: string;
@@ -184,6 +182,22 @@ describe('replayer', function () {
     await assertDomSnapshot(page);
   });
 
+  it('should persist StyleSheetRule changes when skipping triggers parent style element to move in diff', async () => {
+    await page.evaluate(`events = ${JSON.stringify(movingStyleSheetOnDiff)}`);
+
+    const result = await page.evaluate(`
+      const { Replayer } = rrweb;
+      const replayer = new Replayer(events);
+      replayer.pause(3000);
+      const rules = [...replayer.iframe.contentDocument.styleSheets].map(
+        (sheet) => [...sheet.rules],
+      ).flat();
+      rules.some((x) => x.cssText === '.target-element { background-color: teal; }');
+    `);
+
+    expect(result).toEqual(true);
+  });
+
   it('should apply fast forwarded StyleSheetRules that where added', async () => {
     await page.evaluate(`events = ${JSON.stringify(styleSheetRuleEvents)}`);
     const result = await page.evaluate(`
@@ -252,7 +266,7 @@ describe('replayer', function () {
     await waitForRAF(page);
 
     /** check the second selection event */
-    [startOffset, endOffset] = (await page.evaluate(`      
+    [startOffset, endOffset] = (await page.evaluate(`
       replayer.pause(410);
       var range = replayer.iframe.contentDocument.getSelection().getRangeAt(0);
       [range.startOffset, range.endOffset];
@@ -729,7 +743,7 @@ describe('replayer', function () {
       events = ${JSON.stringify(canvasInIframe)};
       const { Replayer } = rrweb;
       var replayer = new Replayer(events,{showDebug:true});
-      replayer.pause(550);            
+      replayer.pause(550);
     `);
     const replayerIframe = await page.$('iframe');
     const contentDocument = await replayerIframe!.contentFrame()!;
@@ -791,7 +805,7 @@ describe('replayer', function () {
       const replayer = new Replayer(events);
       replayer.play();
     `);
-    await page.waitForTimeout(50);
+    await waitForTimeout(50);
 
     await assertDomSnapshot(page);
   });
@@ -805,9 +819,165 @@ describe('replayer', function () {
       replayer.addEvent(events[events.length-2]);
       replayer.addEvent(events[events.length-1]);
     `);
-    await page.waitForTimeout(50);
+    await waitForTimeout(50);
 
     await assertDomSnapshot(page);
+  });
+
+  it('has a pointer for touch interactions with pointerIds', async () => {
+    await page.evaluate(`events = ${JSON.stringify(touchAllPointerEvents)}`);
+    await page.evaluate(`
+      const { Replayer } = rrweb;
+      const replayer = new Replayer(events);
+    `);
+
+    // No active pointers should exist
+    expect(
+      await page.evaluate(
+        () => document.querySelectorAll('.replayer-mouse')!.length,
+      ),
+    ).toEqual(0);
+
+    await page.evaluate(`
+      replayer.pause(101);
+    `);
+
+    // 2 pointers should exist
+    expect(
+      await page.evaluate(
+        () => document.querySelectorAll('.touch-active')!.length,
+      ),
+    ).toEqual(2);
+
+    await page.evaluate(`
+      replayer.pause(220);
+    `);
+
+    // Both pointers should be removed after the TouchEnd event
+    expect(
+      await page.evaluate(
+        () => document.querySelectorAll('.replayer-mouse')!.length,
+      ),
+    ).toEqual(0);
+
+    expect(
+      await page.evaluate(
+        () => document.querySelectorAll('.replayer-mouse-tail')!.length,
+      ),
+    ).toEqual(0);
+  });
+
+  // This should't happen, but we want to test/capture the behavior
+  it('has a pointer for touch interactions with some pointerIds', async () => {
+    await page.evaluate(`events = ${JSON.stringify(touchSomePointerEvents)}`);
+    await page.evaluate(`
+      const { Replayer } = rrweb;
+      const replayer = new Replayer(events);
+    `);
+
+    // No active pointers should exist
+    expect(
+      await page.evaluate(
+        () => document.querySelectorAll('.replayer-mouse')!.length,
+      ),
+    ).toEqual(0);
+
+    await page.evaluate(`
+      replayer.pause(101);
+    `);
+
+    // 2 pointers should exist
+    expect(
+      await page.evaluate(
+        () => document.querySelectorAll('.touch-active')!.length,
+      ),
+    ).toEqual(2);
+
+    await page.evaluate(`
+      replayer.pause(220);
+    `);
+
+    // Both pointers should be removed after the TouchEnd event
+    expect(
+      await page.evaluate(
+        () => document.querySelectorAll('.replayer-mouse')!.length,
+      ),
+    ).toEqual(0);
+
+    expect(
+      await page.evaluate(
+        () => document.querySelectorAll('.replayer-mouse-tail')!.length,
+      ),
+    ).toEqual(0);
+  });
+
+  it('has a pointer for regular mouse interactions', async () => {
+    await page.evaluate(`events = ${JSON.stringify(mouseEvents)}`);
+    await page.evaluate(`
+      const { Replayer } = rrweb;
+      const replayer = new Replayer(events);
+    `);
+
+    // No pointer should exist yet
+    expect(
+      await page.evaluate(
+        () => document.querySelectorAll('.replayer-mouse')!.length,
+      ),
+    ).toEqual(0);
+
+    await page.evaluate(`
+      replayer.pause(101);
+    `);
+
+    // One mouse pointer should exist
+    expect(
+      await page.evaluate(
+        () => document.querySelectorAll('.replayer-mouse')!.length,
+      ),
+    ).toEqual(1);
+
+    await page.evaluate(`
+      replayer.pause(160);
+    `);
+
+    // Pointer should still exist after all events execute
+    expect(
+      await page.evaluate(
+        () => document.querySelectorAll('.replayer-mouse')!.length,
+      ),
+    ).toEqual(1);
+  });
+
+  it('removes tap circles from the screen when isSync = true', async () => {
+    await page.evaluate(`events = ${JSON.stringify(isSyncTapEvents)}`);
+    await page.evaluate(`
+      const { Replayer } = rrweb;
+      const replayer = new Replayer(events);
+    `);
+
+    // No pointer should exist yet
+    expect(
+      await page.evaluate(
+        () => document.querySelectorAll('.replayer-mouse')!.length,
+      ),
+    ).toEqual(0);
+
+    // Seek to second tap
+    await page.evaluate(`
+      replayer.pause(161);
+    `);
+
+    // Seek to first tap
+    await page.evaluate(`
+      replayer.pause(101);
+    `);
+
+    // Only one tap should exist, not both
+    expect(
+      await page.evaluate(
+        () => document.querySelectorAll('.touch-active')!.length,
+      ),
+    ).toEqual(1);
   });
 
   it('should destroy the replayer after calling destroy()', async () => {
@@ -815,7 +985,7 @@ describe('replayer', function () {
     await page.evaluate(`
       const { Replayer } = rrweb;
       let replayer = new Replayer(events);
-      replayer.play();      
+      replayer.play();
     `);
 
     const replayerWrapperClassName = 'replayer-wrapper';
@@ -834,7 +1004,7 @@ describe('replayer', function () {
       var replayer = new Replayer(events,{showDebug:true});
       replayer.play();
     `);
-    await page.waitForTimeout(600);
+    await waitForTimeout(600);
     const iframe = await page.$('iframe');
     const contentDocument = await iframe!.contentFrame()!;
     const colorRGBMap = {
@@ -1070,188 +1240,6 @@ describe('replayer', function () {
     await check600ms();
   });
 
-  it('can clear adopted stylesheets with empty replaceSync', async () => {
-    await page.evaluate(`
-      events = ${JSON.stringify(emptyReplaceSyncEvents)};
-
-      const { Replayer } = rrweb;
-      var replayer = new Replayer(events, { showDebug: true });
-      replayer.pause(0);
-    `);
-
-    const iframe = await page.$('iframe');
-    const contentDocument = await iframe!.contentFrame()!;
-
-    // At 250ms, stylesheet should have rules
-    await page.evaluate('replayer.pause(250);');
-    expect(
-      await contentDocument!.evaluate(
-        () =>
-          document.adoptedStyleSheets.length === 1 &&
-          document.adoptedStyleSheets[0].cssRules.length === 1,
-      ),
-    ).toBeTruthy();
-
-    // At 350ms, stylesheet should be empty after replaceSync('')
-    await page.evaluate('replayer.pause(350);');
-    expect(
-      await contentDocument!.evaluate(
-        () =>
-          document.adoptedStyleSheets.length === 1 &&
-          document.adoptedStyleSheets[0].cssRules.length === 0,
-      ),
-    ).toBeTruthy();
-  });
-
-  it('can clear adopted stylesheets with empty replace', async () => {
-    await page.evaluate(`
-    events = ${JSON.stringify(emptyReplaceEvents)};
-    const { Replayer } = rrweb;
-    var replayer = new Replayer(events, { showDebug: true });
-    replayer.pause(0);
-    `);
-
-    const iframe = await page.$('iframe');
-    const contentDocument = await iframe!.contentFrame()!;
-
-    // At 250ms, stylesheet should have rules
-    await page.evaluate('replayer.pause(250);');
-    expect(
-      await contentDocument!.evaluate(
-        () =>
-          document.adoptedStyleSheets.length === 1 &&
-          document.adoptedStyleSheets[0].cssRules.length === 1,
-      ),
-    ).toBeTruthy();
-
-    // At 350ms, stylesheet should be empty after replace('')
-    await page.evaluate('replayer.pause(350);');
-    await contentDocument!.waitForFunction(
-      () =>
-        document.adoptedStyleSheets.length === 1 &&
-        document.adoptedStyleSheets[0].cssRules.length === 0,
-    );
-  });
-
-  it('can replay StyleDeclaration events on nested CSS rules inside @media', async () => {
-    await page.evaluate(`
-      events = ${JSON.stringify(nestedStyleDeclarationEvents)};
-      const { Replayer } = rrweb;
-      var replayer = new Replayer(events, { showDebug: true });
-      replayer.pause(0);
-    `);
-    // At 250ms, setProperty on [0, 0] should change background-color to red
-    const bgColorAfterSet = await page.evaluate(`
-      replayer.pause(250);
-      const doc1 = replayer.iframe.contentDocument;
-      const styleElement1 = doc1.querySelector('head style');
-      const sheet1 = styleElement1?.sheet;
-      if (!sheet1 || sheet1.cssRules.length === 0) 'no sheet';
-      const mediaRule1 = sheet1.cssRules[0];
-      if (!mediaRule1 || !mediaRule1.cssRules) 'no media rule';
-      const nestedRule1 = mediaRule1.cssRules[0];
-      nestedRule1?.style?.backgroundColor || 'no bg color';
-    `);
-    expect(bgColorAfterSet).toBe('red');
-
-    // At 350ms, setProperty on [0, 1] should add font-weight: bold
-    const fontWeightAfterSet = await page.evaluate(`
-      replayer.pause(350);
-      const doc2 = replayer.iframe.contentDocument;
-      const styleElement2 = doc2.querySelector('head style');
-      const sheet2 = styleElement2?.sheet;
-      if (!sheet2) 'no sheet';
-      const mediaRule2 = sheet2.cssRules[0];
-      const secondRule2 = mediaRule2?.cssRules?.[1];
-      secondRule2?.style?.fontWeight || 'no font weight';
-    `);
-    expect(fontWeightAfterSet).toBe('bold');
-
-    // At 450ms, removeProperty on [0, 0] should remove width
-    const widthAfterRemove = await page.evaluate(`
-      replayer.pause(450);
-      const doc3 = replayer.iframe.contentDocument;
-      const styleElement3 = doc3.querySelector('head style');
-      const sheet3 = styleElement3?.sheet;
-      if (!sheet3) 'has width';
-      const mediaRule3 = sheet3.cssRules[0];
-      const nestedRule3 = mediaRule3?.cssRules?.[0];
-      nestedRule3?.style?.width || '';
-    `);
-    expect(widthAfterRemove).toBe('');
-
-    // At 550ms, setProperty on deeply nested [1, 0, 0] should change background-color to purple
-    const deepBgColorAfterSet = await page.evaluate(`
-      replayer.pause(550);
-      const doc4 = replayer.iframe.contentDocument;
-      const styleElement4 = doc4.querySelector('head style');
-      const sheet4 = styleElement4?.sheet;
-      if (!sheet4 || sheet4.cssRules.length < 2) 'no sheet';
-      const supportsRule4 = sheet4.cssRules[1];
-      const mediaRule4 = supportsRule4?.cssRules?.[0];
-      const deepRule4 = mediaRule4?.cssRules?.[0];
-      deepRule4?.style?.backgroundColor || 'no bg color';
-    `);
-    expect(deepBgColorAfterSet).toBe('purple');
-
-    // At 650ms, removeProperty on [1, 0, 0] should remove background-color
-    const deepBgColorAfterRemove = await page.evaluate(`
-      replayer.pause(650);
-      const doc5 = replayer.iframe.contentDocument;
-      const styleElement5 = doc5.querySelector('head style');
-      const sheet5 = styleElement5?.sheet;
-      if (!sheet5 || sheet5.cssRules.length < 2) 'has bg';
-      const supportsRule5 = sheet5.cssRules[1];
-      const mediaRule5 = supportsRule5?.cssRules?.[0];
-      const deepRule5 = mediaRule5?.cssRules?.[0];
-      deepRule5?.style?.backgroundColor || '';
-    `);
-    expect(deepBgColorAfterRemove).toBe('');
-  });
-
-  it('should not crash when StyleDeclaration references non-existent rules', async () => {
-    /**
-     * This test verifies that the replayer gracefully handles StyleDeclaration
-     * events that reference rules which don't exist in the stylesheet.
-     *
-     * This can happen due to:
-     * - Timing issues where StyleDeclaration arrives before StyleSheetRule
-     * - Dynamic stylesheets that aren't fully synchronized
-     * - Event ordering issues during recording
-     *
-     * The replayer should silently skip these instead of crashing.
-     */
-    await page.evaluate(
-      `events = ${JSON.stringify(styleDeclarationMissingRuleEvents)}`,
-    );
-
-    // Should not throw any errors
-    const result = await page.evaluate(`
-      try {
-        const { Replayer } = rrweb;
-        const replayer = new Replayer(events, { showDebug: true });
-        replayer.pause(500); // After all StyleDeclaration events
-        'success';
-      } catch (e) {
-        'error: ' + e.message;
-      }
-    `);
-    expect(result).toBe('success');
-
-    // Verify the existing rule still works (wasn't corrupted)
-    const existingRuleColor = await page.evaluate(`
-      const { Replayer } = rrweb;
-      const replayer = new Replayer(events);
-      replayer.pause(500);
-      const doc = replayer.iframe.contentDocument;
-      const style = doc.querySelector('head style');
-      const sheet = style?.sheet;
-      const rule = sheet?.cssRules?.[0];
-      rule?.style?.color || 'no color';
-    `);
-    expect(existingRuleColor).toBe('blue');
-  });
-
   it('should replay document replacement events without warnings or errors', async () => {
     await page.evaluate(
       `events = ${JSON.stringify(documentReplacementEvents)}`,
@@ -1348,39 +1336,326 @@ describe('replayer', function () {
     expect(displayValue).toEqual('block');
   });
 
-  it('can deal with legacy duplicate/conflicting values on textareas', async () => {
-    await page.evaluate(`events = ${JSON.stringify(badTextareaEvents)}`);
+  describe('Fast-forward scrubbing behavior', () => {
+    // Test cases for different scrubbing scenarios with fast-forward logic
 
-    const displayValue = await page.evaluate(`
-      const { Replayer } = rrweb;
-      const replayer = new Replayer(events);
-      replayer.pause(100);
-      const textarea = replayer.iframe.contentDocument.querySelector('textarea');
-      textarea.value;
-    `);
-    // If the custom element is not defined, the display value will be 'none'.
-    // If the custom element is defined, the display value will be 'block'.
-    expect(displayValue).toEqual('this value is used for replay');
-  });
+    it('should enter fast-forward when jumping from small to large gap in activity', async () => {
+      const result = await page.evaluate(`
+        const { Replayer, ReplayerEvents, EventType, IncrementalSource } = rrweb;
+        
+        const testEvents = [
+          { type: EventType.DomContentLoaded, data: {}, timestamp: 1000 },
+          { type: EventType.Load, data: {}, timestamp: 1100 },
+          { 
+            type: EventType.IncrementalSnapshot, 
+            data: { source: IncrementalSource.MouseInteraction, type: 0, id: 1, x: 100, y: 100 }, 
+            timestamp: 2000 
+          },
+          // Small gap - next interaction at 6000ms (4 second gap < 5s threshold)
+          { 
+            type: EventType.IncrementalSnapshot, 
+            data: { source: IncrementalSource.MouseInteraction, type: 0, id: 1, x: 110, y: 110 }, 
+            timestamp: 6000 
+          },
+          // Large gap - next interaction at 20000ms (14 second gap > 5s threshold)
+          { 
+            type: EventType.IncrementalSnapshot, 
+            data: { source: IncrementalSource.MouseInteraction, type: 0, id: 1, x: 200, y: 200 }, 
+            timestamp: 20000 
+          }
+        ];
+        
+        const replayer = new Replayer(testEvents, { 
+          skipInactive: true, 
+          inactivePeriodThreshold: 5000,
+          maxSpeed: 360
+        });
+        
+        replayer.pause(3000); // In small gap, should not fast forward here
+        
+        let skipStartEmitted = false;
+        let skipStartPayload = null;
+        replayer.on(ReplayerEvents.SkipStart, (payload) => {
+          skipStartEmitted = true;
+          skipStartPayload = payload;
+        });
+        replayer.pause(8000); // Jump to large gap should trigger fast forward
+        
+        ({
+          skipStartEmitted,
+          skipStartPayload,
+          speedServiceState: replayer.speedService.state.value
+        });
+      `);
 
-  it('can deal with duplicate/conflicting values on style elements', async () => {
-    await page.evaluate(`events = ${JSON.stringify(badStyleEvents)}`);
+      expect((result as any).skipStartEmitted).toBe(true);
+      expect((result as any).skipStartPayload).toBeTruthy();
+      expect((result as any).skipStartPayload.speed).toBeGreaterThan(1);
+      expect((result as any).speedServiceState).toBe('skipping');
+    });
 
-    const changedColors = await page.evaluate(`
-      const { Replayer } = rrweb;
-      const replayer = new Replayer(events);
-      replayer.pause(1000);
-      // Get the color of the elements after applying the style mutation event
-      [
-        replayer.iframe.contentWindow.getComputedStyle(
-          replayer.iframe.contentDocument.querySelector('#one'),
-        ).color,
-        replayer.iframe.contentWindow.getComputedStyle(
-          replayer.iframe.contentDocument.querySelector('#two'),
-        ).color,
-      ];
-`);
-    const newColor = 'rgb(255, 255, 0)'; // yellow
-    expect(changedColors).toEqual([newColor, newColor]);
+    it('should exit fast-forward when jumping from large to small gap in activity', async () => {
+      const result = await page.evaluate(`
+        const { Replayer, ReplayerEvents, EventType, IncrementalSource } = rrweb;
+        
+        const testEvents = [
+          { type: EventType.DomContentLoaded, data: {}, timestamp: 1000 },
+          { type: EventType.Load, data: {}, timestamp: 1100 },
+          { 
+            type: EventType.IncrementalSnapshot, 
+            data: { source: IncrementalSource.MouseInteraction, type: 0, id: 1, x: 100, y: 100 }, 
+            timestamp: 2000 
+          },
+          // Large gap - 18 second gap > 5s threshold
+          { 
+            type: EventType.IncrementalSnapshot, 
+            data: { source: IncrementalSource.MouseInteraction, type: 0, id: 1, x: 110, y: 110 }, 
+            timestamp: 20000 
+          },
+          // Small gap - 3 second gap < 5s threshold
+          { 
+            type: EventType.IncrementalSnapshot, 
+            data: { source: IncrementalSource.MouseInteraction, type: 0, id: 1, x: 200, y: 200 }, 
+            timestamp: 23000 
+          }
+        ];
+        
+        const replayer = new Replayer(testEvents, { 
+          skipInactive: true, 
+          inactivePeriodThreshold: 5000,
+          maxSpeed: 360
+        });
+        
+        replayer.pause(5000); // In large gap, should fast forward here
+        
+        let skipEndEmitted = false;
+        let skipStartEmitted = false;
+        replayer.on(ReplayerEvents.SkipEnd, () => {
+          skipEndEmitted = true;
+        });
+        replayer.on(ReplayerEvents.SkipStart, () => {
+          skipStartEmitted = true;
+        });
+        replayer.pause(21000); // Jump to small gap should exit fast-forward
+        
+        ({
+          skipEndEmitted,
+          skipStartEmitted,
+          speedServiceState: replayer.speedService.state.value
+        });
+      `);
+
+      expect((result as any).skipEndEmitted).toBe(true);
+      expect((result as any).skipStartEmitted).toBe(false);
+      expect((result as any).speedServiceState).toBe('normal');
+    });
+
+    it('should maintain fast-forward and adjust speed when jumping from large to large gap in activity', async () => {
+      const result = await page.evaluate(`
+        const { Replayer, ReplayerEvents, EventType, IncrementalSource } = rrweb;
+        
+        const testEvents = [
+          { type: EventType.DomContentLoaded, data: {}, timestamp: 1000 },
+          { type: EventType.Load, data: {}, timestamp: 1100 },
+          { 
+            type: EventType.IncrementalSnapshot, 
+            data: { source: IncrementalSource.MouseInteraction, type: 0, id: 1, x: 100, y: 100 }, 
+            timestamp: 2000 
+          },
+          // First large gap - 13 second gap > 5s threshold
+          { 
+            type: EventType.IncrementalSnapshot, 
+            data: { source: IncrementalSource.MouseInteraction, type: 0, id: 1, x: 110, y: 110 }, 
+            timestamp: 15000 
+          },
+          // Second large gap - 20 second gap > 5s threshold
+          { 
+            type: EventType.IncrementalSnapshot, 
+            data: { source: IncrementalSource.MouseInteraction, type: 0, id: 1, x: 200, y: 200 }, 
+            timestamp: 35000 
+          }
+        ];
+        
+        const replayer = new Replayer(testEvents, { 
+          skipInactive: true, 
+          inactivePeriodThreshold: 5000,
+          maxSpeed: 360
+        });
+        let skipStartCount = 0;
+        let lastSkipStartPayload = null;
+        replayer.on(ReplayerEvents.SkipStart, (payload) => {
+          skipStartCount++;
+          lastSkipStartPayload = payload;
+        });
+        
+        // Jump to first large gap
+        replayer.pause(8000); 
+        const firstGapSpeed = lastSkipStartPayload?.speed;
+        
+        // Reset skipStartCount and jump to second large gap (bigger gap -> higher speed)
+        skipStartCount = 0;
+        replayer.pause(20000); 
+        
+        ({
+          skipStartCount,
+          firstGapSpeed,
+          secondGapSpeed: lastSkipStartPayload?.speed,
+          speedServiceState: replayer.speedService.state.value
+        });
+      `);
+
+      expect((result as any).skipStartCount).toBe(1); // Should trigger reevaluation
+      expect((result as any).firstGapSpeed).toBeGreaterThan(1);
+      expect((result as any).secondGapSpeed).toBeGreaterThan(1);
+      expect((result as any).secondGapSpeed).toBeGreaterThan(
+        (result as any).firstGapSpeed,
+      ); // Bigger gap -> higher speed
+      expect((result as any).speedServiceState).toBe('skipping');
+    });
+
+    it('should not trigger fast-forward when jumping from small to small gap in activity', async () => {
+      const result = await page.evaluate(`
+        const { Replayer, ReplayerEvents, EventType, IncrementalSource } = rrweb;
+        
+        const testEvents = [
+          { type: EventType.DomContentLoaded, data: {}, timestamp: 1000 },
+          { type: EventType.Load, data: {}, timestamp: 1100 },
+          { 
+            type: EventType.IncrementalSnapshot, 
+            data: { source: IncrementalSource.MouseInteraction, type: 0, id: 1, x: 100, y: 100 }, 
+            timestamp: 2000 
+          },
+          // Small gap - 4 second gap < 5s threshold
+          { 
+            type: EventType.IncrementalSnapshot, 
+            data: { source: IncrementalSource.MouseInteraction, type: 0, id: 1, x: 110, y: 110 }, 
+            timestamp: 6000 
+          },
+          // Another small gap - 3 second gap < 5s threshold
+          { 
+            type: EventType.IncrementalSnapshot, 
+            data: { source: IncrementalSource.MouseInteraction, type: 0, id: 1, x: 200, y: 200 }, 
+            timestamp: 9000 
+          }
+        ];
+        
+        const replayer = new Replayer(testEvents, { 
+          skipInactive: true, 
+          inactivePeriodThreshold: 5000,
+          maxSpeed: 360
+        });
+        
+        replayer.pause(3000); 
+
+        let skipStartEmitted = false;
+        replayer.on(ReplayerEvents.SkipStart, () => {
+          skipStartEmitted = true;
+        });
+        replayer.pause(7000); 
+        
+        ({
+          skipStartEmitted,
+          speedServiceState: replayer.speedService.state.value
+        });
+      `);
+
+      expect((result as any).skipStartEmitted).toBe(false);
+      expect((result as any).speedServiceState).toBe('normal');
+    });
+
+    it('should respect inactivePeriodThreshold when scrubbing', async () => {
+      const result = await page.evaluate(`
+        const { Replayer, ReplayerEvents, EventType, IncrementalSource } = rrweb;
+        
+        const testEvents = [
+          { type: EventType.DomContentLoaded, data: {}, timestamp: 1000 },
+          { type: EventType.Load, data: {}, timestamp: 1100 },
+          { 
+            type: EventType.IncrementalSnapshot, 
+            data: { source: IncrementalSource.MouseInteraction, type: 0, id: 1, x: 100, y: 100 }, 
+            timestamp: 2000 
+          },
+          // Gap just below threshold should not trigger fast forward - 9 second gap < 10s threshold
+          { 
+            type: EventType.IncrementalSnapshot, 
+            data: { source: IncrementalSource.MouseInteraction, type: 0, id: 1, x: 110, y: 110 }, 
+            timestamp: 11000 
+          },
+          // Gap above threshold should trigger fast forward - 11 second gap > 10s threshold
+          { 
+            type: EventType.IncrementalSnapshot, 
+            data: { source: IncrementalSource.MouseInteraction, type: 0, id: 1, x: 200, y: 200 }, 
+            timestamp: 22000 
+          }
+        ];
+        
+        const replayer = new Replayer(testEvents, { 
+          skipInactive: true, 
+          inactivePeriodThreshold: 10000,
+          maxSpeed: 360
+        });
+        let skipStartEmitted = false;
+        replayer.on(ReplayerEvents.SkipStart, () => {
+          skipStartEmitted = true;
+        });
+        
+        replayer.pause(5000);
+        const belowThresholdTriggered = skipStartEmitted;
+        
+        skipStartEmitted = false;
+        replayer.pause(15000); 
+        const aboveThresholdTriggered = skipStartEmitted;
+        
+        ({
+          belowThresholdTriggered,
+          aboveThresholdTriggered
+        });
+      `);
+
+      expect((result as any).belowThresholdTriggered).toBe(false);
+      expect((result as any).aboveThresholdTriggered).toBe(true);
+    });
+
+    it('should never fast forward when skipInactive is disabled', async () => {
+      const result = await page.evaluate(`
+        const { Replayer, ReplayerEvents, EventType, IncrementalSource } = rrweb;
+        
+        const testEvents = [
+          { type: EventType.DomContentLoaded, data: {}, timestamp: 1000 },
+          { type: EventType.Load, data: {}, timestamp: 1100 },
+          { 
+            type: EventType.IncrementalSnapshot, 
+            data: { source: IncrementalSource.MouseInteraction, type: 0, id: 1, x: 100, y: 100 }, 
+            timestamp: 2000 
+          },
+          // Huge gap - 30 second gap that would normally trigger fast-forward
+          { 
+            type: EventType.IncrementalSnapshot, 
+            data: { source: IncrementalSource.MouseInteraction, type: 0, id: 1, x: 200, y: 200 }, 
+            timestamp: 32000 
+          }
+        ];
+        
+        const replayer = new Replayer(testEvents, { 
+          skipInactive: false, // Disabled!
+          inactivePeriodThreshold: 5000,
+          maxSpeed: 360
+        });
+        let skipStartEmitted = false;
+        replayer.on(ReplayerEvents.SkipStart, () => {
+          skipStartEmitted = true;
+        });
+        
+        replayer.pause(10000);
+        
+        ({
+          skipStartEmitted,
+          speedServiceState: replayer.speedService.state.value
+        });
+      `);
+
+      expect((result as any).skipStartEmitted).toBe(false);
+      expect((result as any).speedServiceState).toBe('normal');
+    });
   });
 });

@@ -3,34 +3,15 @@
  */
 import * as fs from 'fs';
 import * as path from 'path';
-import { beforeEach, describe, expect as _expect, it, vi } from 'vitest';
+import { describe, it, beforeEach, expect } from 'vitest';
 import {
-  adaptCssForReplay,
+  // adaptCssForReplay,
+  addHoverClass,
   buildNodeWithSN,
   createCache,
 } from '../src/rebuild';
-import { NodeType } from '@rrweb/types';
-import { createMirror, Mirror, normalizeCssString } from '../src/utils';
-
-const expect = _expect as unknown as {
-  <T = unknown>(actual: T): {
-    toMatchCss(expected: string): void;
-  } & ReturnType<typeof _expect>;
-} & typeof _expect;
-
-expect.extend({
-  toMatchCss: function (received: string, expected: string) {
-    const pass = normalizeCssString(received) === normalizeCssString(expected);
-    const message: () => string = () =>
-      pass
-        ? ''
-        : `Received (${received}) is not the same as expected (${expected})`;
-    return {
-      message,
-      pass,
-    };
-  },
-});
+import { NodeType } from '../src/types';
+import { createMirror, Mirror } from '../src/utils';
 
 function getDuration(hrtime: [number, number]) {
   const [seconds, nanoseconds] = hrtime;
@@ -132,91 +113,47 @@ describe('rebuild', function () {
   describe('add hover class to hover selector related rules', function () {
     it('will do nothing to css text without :hover', () => {
       const cssText = 'body { color: white }';
-      expect(adaptCssForReplay(cssText, cache)).toMatchCss(cssText);
+      expect(addHoverClass(cssText, cache)).toEqual(cssText);
     });
 
     it('can add hover class to css text', () => {
       const cssText = '.a:hover { color: white }';
-      expect(adaptCssForReplay(cssText, cache)).toMatchCss(
+      expect(addHoverClass(cssText, cache)).toEqual(
         '.a:hover, .a.\\:hover { color: white }',
-      );
-    });
-
-    it('can correctly add hover when in middle of selector', () => {
-      const cssText = 'ul li a:hover img { color: white }';
-      expect(adaptCssForReplay(cssText, cache)).toMatchCss(
-        'ul li a:hover img, ul li a.\\:hover img { color: white }',
-      );
-    });
-
-    it('can correctly add hover on multiline selector', () => {
-      const cssText = `ul li.specified a:hover img,
-ul li.multiline
-b:hover
-img,
-ul li.specified c:hover img {
-  color: white
-}`;
-      expect(adaptCssForReplay(cssText, cache)).toMatchCss(
-        `ul li.specified a:hover img,
-ul li.multiline
-b:hover
-img,
-ul li.specified c:hover img,
-ul li.specified a.\\:hover img,
-ul li.multiline b.\\:hover img,
-ul li.specified c.\\:hover img {
-  color: white
-}`,
-      );
-    });
-
-    it('can add hover class within media query', () => {
-      const cssText = '@media screen { .m:hover { color: white } }';
-      expect(adaptCssForReplay(cssText, cache)).toMatchCss(
-        '@media screen { .m:hover, .m.\\:hover { color: white } }',
       );
     });
 
     it('can add hover class when there is multi selector', () => {
       const cssText = '.a, .b:hover, .c { color: white }';
-      expect(adaptCssForReplay(cssText, cache)).toMatchCss(
-        '.a, .b:hover, .c, .b.\\:hover { color: white }',
+      expect(addHoverClass(cssText, cache)).toEqual(
+        '.a, .b:hover, .b.\\:hover, .c { color: white }',
       );
     });
 
     it('can add hover class when there is a multi selector with the same prefix', () => {
       const cssText = '.a:hover, .a:hover::after { color: white }';
-      expect(adaptCssForReplay(cssText, cache)).toMatchCss(
-        '.a:hover, .a:hover::after, .a.\\:hover, .a.\\:hover::after { color: white }',
+      expect(addHoverClass(cssText, cache)).toEqual(
+        '.a:hover, .a.\\:hover, .a:hover::after, .a.\\:hover::after { color: white }',
       );
     });
 
     it('can add hover class when :hover is not the end of selector', () => {
       const cssText = 'div:hover::after { color: white }';
-      expect(adaptCssForReplay(cssText, cache)).toMatchCss(
+      expect(addHoverClass(cssText, cache)).toEqual(
         'div:hover::after, div.\\:hover::after { color: white }',
       );
     });
 
     it('can add hover class when the selector has multi :hover', () => {
       const cssText = 'a:hover b:hover { color: white }';
-      expect(adaptCssForReplay(cssText, cache)).toMatchCss(
+      expect(addHoverClass(cssText, cache)).toEqual(
         'a:hover b:hover, a.\\:hover b.\\:hover { color: white }',
       );
     });
 
     it('will ignore :hover in css value', () => {
       const cssText = '.a::after { content: ":hover" }';
-      expect(adaptCssForReplay(cssText, cache)).toMatchCss(cssText);
-    });
-
-    it('can adapt media rules to replay context', () => {
-      const cssText =
-        '@media only screen and (min-device-width : 1200px) { .a { width: 10px; }}';
-      expect(adaptCssForReplay(cssText, cache)).toMatchCss(
-        '@media only screen and (min-width : 1200px) { .a { width: 10px; }}',
-      );
+      expect(addHoverClass(cssText, cache)).toEqual(cssText);
     });
 
     // this benchmark is unreliable when run in parallel with other tests
@@ -226,7 +163,7 @@ ul li.specified c.\\:hover img {
         'utf8',
       );
       const start = process.hrtime();
-      adaptCssForReplay(cssText, cache);
+      addHoverClass(cssText, cache);
       const end = process.hrtime(start);
       const duration = getDuration(end);
       expect(duration).toBeLessThan(100);
@@ -241,46 +178,82 @@ ul li.specified c.\\:hover img {
       );
 
       const start = process.hrtime();
-      adaptCssForReplay(cssText, cache);
+      addHoverClass(cssText, cache);
       const end = process.hrtime(start);
 
       const cachedStart = process.hrtime();
-      adaptCssForReplay(cssText, cache);
+      addHoverClass(cssText, cache);
       const cachedEnd = process.hrtime(cachedStart);
 
       expect(getDuration(cachedEnd) * factor).toBeLessThan(getDuration(end));
     });
   });
 
-  it('should not incorrectly interpret escaped quotes', () => {
-    // the ':hover' in the below is a decoy which is not part of the selector,
-    // previously that part was being incorrectly consumed by the selector regex
-    const should_not_modify =
-      ".tailwind :is(.before\\:content-\\[\\'\\'\\])::before { --tw-content: \":hover\"; content: var(--tw-content); }.tailwind :is(.\\[\\&\\>li\\]\\:before\\:content-\\[\\'-\\'\\] > li)::before { color: pink; }";
-    expect(adaptCssForReplay(should_not_modify, cache)).toMatchCss(
-      should_not_modify,
-    );
+  describe('isCustom elements', function () {
+    it('should not throw when rebuilding custom element without hyphen (e.g. webview)', function () {
+      // Elements like Electron's <webview> are registered as custom elements
+      // but their names don't contain a hyphen, which makes them invalid for
+      // customElements.define(). We should handle this gracefully via try/catch.
+      expect(() => {
+        buildNodeWithSN(
+          {
+            id: 1,
+            tagName: 'webview',
+            type: NodeType.Element,
+            attributes: {},
+            childNodes: [],
+            isCustom: true,
+          },
+          {
+            doc: document,
+            mirror,
+            hackCss: false,
+            cache,
+          },
+        );
+      }).not.toThrow();
+    });
+
+    it('should define a custom element with a valid hyphenated name', function () {
+      const node = buildNodeWithSN(
+        {
+          id: 1,
+          tagName: 'my-component',
+          type: NodeType.Element,
+          attributes: {},
+          childNodes: [],
+          isCustom: true,
+        },
+        {
+          doc: document,
+          mirror,
+          hackCss: false,
+          cache,
+        },
+      ) as HTMLElement;
+      expect(node).toBeTruthy();
+      expect(node.tagName.toLowerCase()).toBe('my-component');
+    });
   });
 
-  it('should not incorrectly interpret at rules', () => {
-    // the ':hover' in the below is a decoy which is not part of the selector,
-    const should_not_modify =
-      '@import url("https://fonts.googleapis.com/css2?family=Rubik:ital,wght@0,400;0,500;0,700;1,400&display=:hover");';
-    expect(adaptCssForReplay(should_not_modify, cache)).toMatchCss(
-      should_not_modify,
-    );
-  });
+  // sentry: skipped because we've removed `adaptCssForReplay` for now
+  // it('should not incorrectly interpret escaped quotes', () => {
+  //   // the ':hover' in the below is a decoy which is not part of the selector,
+  //   // previously that part was being incorrectly consumed by the selector regex
+  //   const should_not_modify =
+  //     ".tailwind :is(.before\\:content-\\[\\'\\'\\])::before { --tw-content: \":hover\"; content: var(--tw-content); }.tailwind :is(.\\[\\&\\>li\\]\\:before\\:content-\\[\\'-\\'\\] > li)::before { color: pink; }";
+  //   expect(adaptCssForReplay(should_not_modify, cache)).toEqual(
+  //     should_not_modify,
+  //   );
+  // });
 
-  it('handles exceptions from postcss when calling adaptCssForReplay', () => {
-    const consoleWarnSpy = vi
-      .spyOn(console, 'warn')
-      .mockImplementation(() => {});
-    // trigger CssSyntaxError by passing invalid css
-    const cssText = 'a{';
-    adaptCssForReplay(cssText, cache);
-    expect(consoleWarnSpy).toHaveBeenLastCalledWith(
-      'Failed to adapt css for replay',
-      expect.any(Error),
-    );
-  });
+  // sentry: skipped because we've removed `adaptCssForReplay` for now
+  // it('should not incorrectly interpret at rules', () => {
+  //   // the ':hover' in the below is a decoy which is not part of the selector,
+  //   const should_not_modify =
+  //     '@import url("https://fonts.googleapis.com/css2?family=Rubik:ital,wght@0,400;0,500;0,700;1,400&display=:hover");';
+  //   expect(adaptCssForReplay(should_not_modify, cache)).toEqual(
+  //     should_not_modify,
+  //   );
+  // });
 });

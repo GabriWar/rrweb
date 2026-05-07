@@ -1,9 +1,10 @@
+import type { Mirror } from '@sentry-internal/rrweb-snapshot';
 import SimplePeer from 'simple-peer-light';
 import type {
   RecordPlugin,
   ICrossOriginIframeMirror,
-  IMirror,
-} from '@rrweb/types';
+} from '@sentry-internal/rrweb-types';
+import { getIFrameContentWindow } from '@sentry-internal/rrdom';
 import type { WebRTCDataChannel } from './types';
 
 export const PLUGIN_NAME = 'rrweb/canvas-webrtc@1';
@@ -28,7 +29,7 @@ export type CrossOriginIframeMessageEventContent = {
 
 export class RRWebPluginCanvasWebRTCRecord {
   private peer: SimplePeer.Instance | null = null;
-  private mirror: IMirror<Node> | undefined;
+  private mirror: Mirror | undefined;
   private crossOriginIframeMirror: ICrossOriginIframeMirror | undefined;
   private streamMap: Map<number, MediaStream> = new Map();
   private incomingStreams = new Set<MediaStream>();
@@ -248,7 +249,7 @@ export class RRWebPluginCanvasWebRTCRecord {
       if (remoteId === -1) return;
 
       found = true;
-      iframe.contentWindow?.postMessage(
+      getIFrameContentWindow(iframe)?.postMessage(
         {
           type: 'rrweb-canvas-webrtc',
           data: {

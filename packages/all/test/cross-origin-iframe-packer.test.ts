@@ -11,14 +11,14 @@ import type {
   eventWithTime,
   listenerHandler,
   mutationData,
-} from '@rrweb/types';
-import { unpack } from '@rrweb/packer';
+} from '@sentry-internal/rrweb-types';
+import { unpack } from '@sentry-internal/rrweb-packer';
 import * as fs from 'fs';
 import * as path from 'path';
 import type * as puppeteer from 'puppeteer';
-import type { recordOptions } from 'rrweb';
-import type {} from '@rrweb/types';
-import { EventType } from '@rrweb/types';
+import type { recordOptions } from '@sentry-internal/rrweb';
+import type {} from '@sentry-internal/rrweb-types';
+import { EventType } from '@sentry-internal/rrweb-types';
 import {
   assertSnapshot,
   getServerURL,
@@ -149,7 +149,7 @@ describe('cross origin iframes & packer', function (this: ISuite) {
         const unpackedSnapshots = packedSnapshots.map((packed) =>
           unpack(packed),
         ) as eventWithTime[];
-        await assertSnapshot(unpackedSnapshots);
+        assertSnapshot(unpackedSnapshots);
       });
     });
   });

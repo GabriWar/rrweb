@@ -12,10 +12,10 @@ npm install @rrweb/rrweb-plugin-sequential-id-record
 ## Usage
 
 ```js
-import { record } from '@rrweb/record';
+import rrweb from 'rrweb';
 import { getRecordSequentialIdPlugin } from '@rrweb/rrweb-plugin-sequential-id-record';
 
-record({
+rrweb.record({
   emit: function emit(event) {
     // send events to server
   },

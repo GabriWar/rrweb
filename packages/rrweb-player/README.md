@@ -12,46 +12,25 @@ rrweb-player uses rrweb's Replayer under the hood, but as Replayer doesn't inclu
 
 ## Installation
 
-### 1) Bundler / npm (Recommended)
+rrweb-player can also be included with `<script>`：
+
+```html
+<link
+  rel="stylesheet"
+  href="https://cdn.jsdelivr.net/npm/rrweb-player@latest/dist/style.css"
+/>
+<script src="https://cdn.jsdelivr.net/npm/rrweb-player@latest/dist/index.umd.cjs"></script>
+```
+
+Or installed by using NPM：
 
 ```shell
-npm install rrweb-player
+npm install --save rrweb-player
 ```
 
 ```js
 import rrwebPlayer from 'rrweb-player';
 import 'rrweb-player/dist/style.css';
-```
-
-### 2) Browser Without Bundler (ESM + import maps)
-
-```html
-<link
-  rel="stylesheet"
-  href="https://cdn.jsdelivr.net/npm/rrweb-player@latest/dist/style.css"
-/>
-<script type="importmap">
-  {
-    "imports": {
-      "rrweb-player": "https://cdn.jsdelivr.net/npm/rrweb-player@latest/+esm"
-    }
-  }
-</script>
-<script type="module">
-  import rrwebPlayer from 'rrweb-player';
-</script>
-```
-
-### 3) Legacy Direct `<script>` Include (UMD fallback)
-
-Use this only for compatibility with non-module environments.
-
-```html
-<link
-  rel="stylesheet"
-  href="https://cdn.jsdelivr.net/npm/rrweb-player@latest/dist/style.css"
-/>
-<script src="https://cdn.jsdelivr.net/npm/rrweb-player@latest/umd/rrweb-player.min.js"></script>
 ```
 
 ## Usage

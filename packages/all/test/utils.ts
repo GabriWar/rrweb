@@ -1,6 +1,6 @@
+import { NodeType } from '@sentry-internal/rrweb-snapshot';
 import { expect } from 'vitest';
 import {
-  NodeType,
   EventType,
   IncrementalSource,
   eventWithTime,
@@ -8,7 +8,7 @@ import {
   mouseInteractionData,
   event,
   pluginEvent,
-} from '@rrweb/types';
+} from '@sentry-internal/rrweb-types';
 import * as puppeteer from 'puppeteer';
 import * as path from 'path';
 import * as http from 'http';
@@ -19,12 +19,12 @@ export async function launchPuppeteer(
   options?: Parameters<(typeof puppeteer)['launch']>[0],
 ) {
   return await puppeteer.launch({
-    headless: process.env.PUPPETEER_HEADLESS ? 'new' : false,
+    headless: process.env.PUPPETEER_HEADLESS ? true : false,
     defaultViewport: {
       width: 1920,
       height: 1080,
     },
-    args: ['--no-sandbox', '--disable-setuid-sandbox'],
+    args: ['--no-sandbox'],
     ...options,
   });
 }
@@ -199,7 +199,7 @@ function stringifySnapshots(snapshots: eventWithTime[]): string {
           if (pluginPayload?.trace.length) {
             pluginPayload.trace = pluginPayload.trace.map((trace) => {
               return trace.replace(
-                /^pptr:evaluate;.*?:(\d+:\d+)/,
+                /^pptr[:;].*?:(\d+:\d+)/,
                 '__puppeteer_evaluation_script__:$1',
               );
             });
@@ -207,7 +207,7 @@ function stringifySnapshots(snapshots: eventWithTime[]): string {
           if (pluginPayload?.payload.length) {
             pluginPayload.payload = pluginPayload.payload.map((payload) => {
               return payload.replace(
-                /pptr:evaluate;.*?:(\d+:\d+)/g,
+                /pptr[:;].*?:(\d+:\d+)/g,
                 '__puppeteer_evaluation_script__:$1',
               );
             });
@@ -218,12 +218,23 @@ function stringifySnapshots(snapshots: eventWithTime[]): string {
       }),
     null,
     2,
-  ).replace(
-    // servers might get run on a random port,
-    // so we need to normalize the port number
-    /http:\/\/localhost:\d+/g,
-    'http://localhost:3030',
-  );
+  )
+    .replace(
+      // servers might get run on a random port,
+      // so we need to normalize the port number
+      /http:\/\/localhost:\d+/g,
+      'http://localhost:3030',
+    )
+    .replace(
+      // Chrome's neterror page uses Lit templates with random IDs per build
+      /\?lit\$\d+\$/g,
+      '?lit$NORMALIZED$',
+    )
+    .replace(
+      // Chrome's neterror page font-family varies by platform
+      /font-family: .+?; font-size/g,
+      'font-family: system-ui, sans-serif; font-size',
+    );
 }
 
 function stripBlobURLsFromAttributes(node: {

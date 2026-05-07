@@ -1,20 +1,10 @@
 import * as fs from 'fs';
-import * as http from 'http';
 import * as path from 'path';
-import * as puppeteer from 'puppeteer';
+import * as http from 'http';
 import * as url from 'url';
-import {
-  afterAll,
-  assert,
-  beforeAll,
-  beforeEach,
-  describe,
-  expect,
-  it,
-  vi,
-} from 'vitest';
-
-import { getServerURL, waitForRAF } from './utils';
+import * as puppeteer from 'puppeteer';
+import { vi, assert, describe, it, beforeAll, afterAll, expect } from 'vitest';
+import { waitForRAF, getServerURL } from './utils';
 
 const htmlFolder = path.join(__dirname, 'html');
 const htmls = fs.readdirSync(htmlFolder).map((filePath) => {
@@ -70,15 +60,6 @@ function sanitizeSnapshot(snapshot: string): string {
   return snapshot.replace(/localhost:[0-9]+/g, 'localhost:3030');
 }
 
-async function snapshot(page: puppeteer.Page, code: string): Promise<string> {
-  await waitForRAF(page);
-  const result = (await page.evaluate(`${code}
-    const snapshot = rrwebSnapshot.snapshot(document);
-    JSON.stringify(snapshot, null, 2);
-  `)) as string;
-  return result;
-}
-
 function assertSnapshot(snapshot: string): void {
   expect(sanitizeSnapshot(snapshot)).toMatchSnapshot();
 }
@@ -87,7 +68,6 @@ interface ISuite {
   server: http.Server;
   serverURL: string;
   browser: puppeteer.Browser;
-  page: puppeteer.Page;
   code: string;
 }
 
@@ -103,7 +83,7 @@ describe('integration tests', function (this: ISuite) {
     serverURL = getServerURL(server);
     browser = await puppeteer.launch({
       // headless: false,
-      args: ['--no-sandbox', '--disable-setuid-sandbox'],
+      args: ['--no-sandbox'],
     });
 
     code = fs.readFileSync(
@@ -121,9 +101,6 @@ describe('integration tests', function (this: ISuite) {
     if (html.filePath.substring(html.filePath.length - 1) === '~') {
       continue;
     }
-    // monkey patching breaks rebuild code
-    if (html.filePath.includes('monkey-patched-elements.html')) continue;
-
     const title = '[html file]: ' + html.filePath;
     it(title, async () => {
       const page: puppeteer.Page = await browser.newPage();
@@ -177,7 +154,7 @@ describe('integration tests', function (this: ISuite) {
           'blob:http://localhost:xxxx/...',
         );
 
-      await assertSnapshot(rebuildHtml);
+      assertSnapshot(rebuildHtml);
     });
   }
 
@@ -259,7 +236,8 @@ iframe.contentDocument.querySelector('center').clientHeight
 
   it('correctly saves cross-origin images offline', async () => {
     const page: puppeteer.Page = await browser.newPage();
-    await page.goto('about:blank', {
+
+    await page.goto(serverURL, {
       waitUntil: 'load',
     });
     await page.setContent(
@@ -371,7 +349,7 @@ iframe.contentDocument.querySelector('center').clientHeight
 
   it('should save background-clip: text; as the more compatible -webkit-background-clip: test;', async () => {
     const page: puppeteer.Page = await browser.newPage();
-    await page.goto(`${serverURL}/html/background-clip-text.html`, {
+    await page.goto(`http://localhost:3030/html/background-clip-text.html`, {
       waitUntil: 'load',
     });
     await waitForRAF(page); // wait for page to render
@@ -389,10 +367,13 @@ iframe.contentDocument.querySelector('center').clientHeight
   it('images with inline onload should work', async () => {
     const page: puppeteer.Page = await browser.newPage();
 
-    await page.goto(`${serverURL}/html/picture-with-inline-onload.html`, {
-      waitUntil: 'load',
-    });
-    await page.waitForSelector('img', { timeout: 2000 });
+    await page.goto(
+      'http://localhost:3030/html/picture-with-inline-onload.html',
+      {
+        waitUntil: 'load',
+      },
+    );
+    await page.waitForSelector('img', { timeout: 1000 });
     await page.evaluate(`${code}`);
     await page.evaluate(`
     var snapshot = rrwebSnapshot.snapshot(document, {
@@ -405,22 +386,6 @@ iframe.contentDocument.querySelector('center').clientHeight
       'document.querySelector("img").onload.name',
     )) as string;
     assert(fnName === 'onload');
-  });
-
-  it('should be able to record elements even when .childNodes has been monkey patched', async () => {
-    const page: puppeteer.Page = await browser.newPage();
-    await page.goto(`${serverURL}/html/monkey-patched-elements.html`, {
-      waitUntil: 'load',
-    });
-    await waitForRAF(page); // wait for page to render
-    const snapshotResult = JSON.stringify(
-      await page.evaluate(`${code};
-          rrwebSnapshot.snapshot(document);
-        `),
-      null,
-      2,
-    );
-    expect(snapshotResult).toMatchSnapshot();
   });
 });
 
@@ -436,7 +401,7 @@ describe('iframe integration tests', function (this: ISuite) {
     serverURL = getServerURL(server);
     browser = await puppeteer.launch({
       // headless: false,
-      args: ['--no-sandbox', '--disable-setuid-sandbox'],
+      args: ['--no-sandbox'],
     });
 
     code = fs.readFileSync(
@@ -464,54 +429,6 @@ describe('iframe integration tests', function (this: ISuite) {
       null,
       2,
     );
-    await assertSnapshot(snapshotResult);
-  });
-});
-
-describe('dialog integration tests', function (this: ISuite) {
-  vi.setConfig({ testTimeout: 30_000 });
-  let server: ISuite['server'];
-  let serverURL: ISuite['serverURL'];
-  let browser: ISuite['browser'];
-  let code: ISuite['code'];
-  let page: ISuite['page'];
-
-  beforeAll(async () => {
-    server = await startServer();
-    serverURL = getServerURL(server);
-    browser = await puppeteer.launch({
-      // headless: false,
-      args: ['--no-sandbox', '--disable-setuid-sandbox'],
-    });
-
-    code = fs.readFileSync(
-      path.resolve(__dirname, '../dist/rrweb-snapshot.umd.cjs'),
-      'utf-8',
-    );
-  });
-
-  beforeEach(async () => {
-    page = await browser.newPage();
-    page.on('console', (msg) => console.log(msg.text()));
-    await page.goto(`${serverURL}/html/dialog.html`, {
-      waitUntil: 'load',
-    });
-  });
-
-  afterAll(async () => {
-    await browser.close();
-    await server.close();
-  });
-
-  it('should capture open attribute for non modal dialogs', async () => {
-    page.evaluate('document.querySelector("dialog").show()');
-    const snapshotResult = await snapshot(page, code);
-    assertSnapshot(snapshotResult);
-  });
-
-  it('should capture open attribute for modal dialogs', async () => {
-    await page.evaluate('document.querySelector("dialog").showModal()');
-    const snapshotResult = await snapshot(page, code);
     assertSnapshot(snapshotResult);
   });
 });
@@ -528,7 +445,7 @@ describe('shadow DOM integration tests', function (this: ISuite) {
     serverURL = getServerURL(server);
     browser = await puppeteer.launch({
       // headless: false,
-      args: ['--no-sandbox', '--disable-setuid-sandbox'],
+      args: ['--no-sandbox'],
     });
 
     code = fs.readFileSync(
@@ -556,6 +473,6 @@ describe('shadow DOM integration tests', function (this: ISuite) {
       null,
       2,
     );
-    await assertSnapshot(snapshotResult);
+    assertSnapshot(snapshotResult);
   });
 });

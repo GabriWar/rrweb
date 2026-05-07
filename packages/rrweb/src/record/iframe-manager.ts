@@ -10,8 +10,42 @@ import type {
   mutationCallBack,
 } from '@rrweb/types';
 import type { StylesheetManager } from './stylesheet-manager';
+import {
+  getIFrameContentDocument,
+  getIFrameContentWindow,
+} from 'rrdom';
 
-export class IframeManager {
+export interface IframeManagerInterface {
+  crossOriginIframeMirror: CrossOriginIframeMirror;
+  crossOriginIframeStyleMirror: CrossOriginIframeMirror;
+  crossOriginIframeRootIdMap: WeakMap<HTMLIFrameElement, number>;
+
+  addIframe(iframeEl: HTMLIFrameElement): void;
+  addLoadListener(cb: (iframeEl: HTMLIFrameElement) => unknown): void;
+  attachIframe(
+    iframeEl: HTMLIFrameElement,
+    childSn: serializedNodeWithId,
+  ): void;
+}
+
+export class IframeManagerNoop implements IframeManagerInterface {
+  public crossOriginIframeMirror = new CrossOriginIframeMirror(genId);
+  public crossOriginIframeStyleMirror: CrossOriginIframeMirror;
+  public crossOriginIframeRootIdMap: WeakMap<HTMLIFrameElement, number> =
+    new WeakMap();
+
+  public addIframe() {
+    // noop
+  }
+  public addLoadListener() {
+    // noop
+  }
+  public attachIframe() {
+    // noop
+  }
+}
+
+export class IframeManager implements IframeManagerInterface {
   private iframes: WeakMap<HTMLIFrameElement, true> = new WeakMap();
   private crossOriginIframeMap: WeakMap<MessageEventSource, HTMLIFrameElement> =
     new WeakMap();
@@ -50,8 +84,8 @@ export class IframeManager {
 
   public addIframe(iframeEl: HTMLIFrameElement) {
     this.iframes.set(iframeEl, true);
-    if (iframeEl.contentWindow)
-      this.crossOriginIframeMap.set(iframeEl.contentWindow, iframeEl);
+    const contentWindow = getIFrameContentWindow(iframeEl);
+    if (contentWindow) this.crossOriginIframeMap.set(contentWindow, iframeEl);
   }
 
   public addLoadListener(cb: (iframeEl: HTMLIFrameElement) => unknown) {
@@ -77,22 +111,25 @@ export class IframeManager {
     });
 
     // Receive messages (events) coming from cross-origin iframes that are nested in this same-origin iframe.
-    if (this.recordCrossOriginIframes)
-      iframeEl.contentWindow?.addEventListener(
+    if (this.recordCrossOriginIframes) {
+      getIFrameContentWindow(iframeEl)?.addEventListener(
         'message',
         this.handleMessage.bind(this),
       );
+    }
 
     this.loadListener?.(iframeEl);
 
+    const iframeDoc = getIFrameContentDocument(iframeEl);
+
     if (
-      iframeEl.contentDocument &&
-      iframeEl.contentDocument.adoptedStyleSheets &&
-      iframeEl.contentDocument.adoptedStyleSheets.length > 0
+      iframeDoc &&
+      iframeDoc.adoptedStyleSheets &&
+      iframeDoc.adoptedStyleSheets.length > 0
     )
       this.stylesheetManager.adoptStyleSheets(
-        iframeEl.contentDocument.adoptedStyleSheets,
-        this.mirror.getId(iframeEl.contentDocument),
+        iframeDoc.adoptedStyleSheets,
+        this.mirror.getId(iframeDoc),
       );
   }
   private handleMessage(message: MessageEvent | CrossOriginIframeMessageEvent) {

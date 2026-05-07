@@ -26,9 +26,7 @@
 **示例 1**
 
 ```js
-import { record } from '@rrweb/record';
-
-record({
+rrweb.record({
   emit(event) {},
   sampling: {
     // 不录制鼠标移动事件
@@ -48,9 +46,7 @@ record({
 **示例 2**
 
 ```js
-import { record } from '@rrweb/record';
-
-record({
+rrweb.record({
   emit(event) {},
   sampling: {
     // 定义不录制的鼠标交互事件类型，可以细粒度的开启或关闭对应交互录制
@@ -78,9 +74,9 @@ rrweb 提供了一个基于 fflate 的简单压缩函数，在 [@rrweb/packer](.
 ```js
 import { pack } from '@rrweb/packer';
 
-record({
+rrweb.record({
   emit(event) {},
-  packFn: pack,
+  packFn: rrweb.pack,
 });
 ```
 
@@ -88,10 +84,9 @@ record({
 
 ```js
 import { unpack } from '@rrweb/packer';
-import { Replayer } from '@rrweb/replay';
 
-const replayer = new Replayer(events, {
-  unpackFn: unpack,
+const replayer = new rrweb.Replayer(events, {
+  unpackFn: rrweb.unpack,
 });
 ```
 

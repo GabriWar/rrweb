@@ -4,12 +4,16 @@ import type {
   SlimDOMOptions,
   MaskInputFn,
   MaskTextFn,
+  MaskAttributeFn,
 } from 'rrweb-snapshot';
-import type { IframeManager } from './record/iframe-manager';
-import type { ShadowDomManager } from './record/shadow-dom-manager';
+import type { IframeManagerInterface } from './record/iframe-manager';
+import type { ShadowDomManagerInterface } from './record/shadow-dom-manager';
 import type { Replayer } from './replay';
 import type { RRNode } from 'rrdom';
-import type { CanvasManager } from './record/observers/canvas/canvas-manager';
+import type {
+  CanvasManagerConstructorOptions,
+  CanvasManagerInterface,
+} from './record/observers/canvas/canvas-manager';
 import type { StylesheetManager } from './record/stylesheet-manager';
 import type {
   DataURLOptions,
@@ -25,6 +29,7 @@ import type {
   KeepIframeSrcFn,
   listenerHandler,
   maskTextClass,
+  unmaskTextClass,
   mediaInteractionCallback,
   mouseInteractionCallBack,
   mousemoveCallBack,
@@ -47,14 +52,20 @@ export type recordOptions<T> = {
   checkoutEveryNms?: number;
   blockClass?: blockClass;
   blockSelector?: string;
+  unblockSelector?: string;
   ignoreClass?: string;
   ignoreSelector?: string;
+  maskAllText?: boolean;
   maskTextClass?: maskTextClass;
+  unmaskTextClass?: unmaskTextClass;
   maskTextSelector?: string;
+  unmaskTextSelector?: string;
   maskAllInputs?: boolean;
   maskInputOptions?: MaskInputOptions;
+  maskAttributeFn?: MaskAttributeFn;
   maskInputFn?: MaskInputFn;
   maskTextFn?: MaskTextFn;
+  maxCanvasSize?: [number, number];
   slimDOMOptions?: SlimDOMOptions | 'all' | true;
   ignoreCSSAttributes?: Set<string>;
   inlineStylesheet?: boolean;
@@ -74,9 +85,14 @@ export type recordOptions<T> = {
   mousemoveWait?: number;
   keepIframeSrcFn?: KeepIframeSrcFn;
   errorHandler?: ErrorHandler;
+  onMutation?: (mutations: MutationRecord[]) => boolean;
+  getCanvasManager?: (
+    options: CanvasManagerConstructorOptions,
+  ) => CanvasManagerInterface;
 };
 
 export type observerParam = {
+  onMutation?: (mutations: MutationRecord[]) => boolean;
   mutationCb: mutationCallBack;
   mousemoveCb: mousemoveCallBack;
   mouseInteractionCb: mouseInteractionCallBack;
@@ -87,11 +103,16 @@ export type observerParam = {
   selectionCb: selectionCallback;
   blockClass: blockClass;
   blockSelector: string | null;
+  unblockSelector: string | null;
   ignoreClass: string;
   ignoreSelector: string | null;
+  maskAllText: boolean;
   maskTextClass: maskTextClass;
+  unmaskTextClass: unmaskTextClass;
   maskTextSelector: string | null;
+  unmaskTextSelector: string | null;
   maskInputOptions: MaskInputOptions;
+  maskAttributeFn?: MaskAttributeFn;
   maskInputFn?: MaskInputFn;
   maskTextFn?: MaskTextFn;
   keepIframeSrcFn: KeepIframeSrcFn;
@@ -111,10 +132,10 @@ export type observerParam = {
   dataURLOptions: DataURLOptions;
   doc: Document;
   mirror: Mirror;
-  iframeManager: IframeManager;
+  iframeManager: IframeManagerInterface;
   stylesheetManager: StylesheetManager;
-  shadowDomManager: ShadowDomManager;
-  canvasManager: CanvasManager;
+  shadowDomManager: ShadowDomManagerInterface;
+  canvasManager: CanvasManagerInterface;
   processedNodeManager: ProcessedNodeManager;
   ignoreCSSAttributes: Set<string>;
   plugins: Array<{
@@ -130,13 +151,19 @@ export type observerParam = {
 
 export type MutationBufferParam = Pick<
   observerParam,
+  | 'onMutation'
   | 'mutationCb'
   | 'blockClass'
   | 'blockSelector'
+  | 'maskAllText'
+  | 'unblockSelector'
   | 'maskTextClass'
+  | 'unmaskTextClass'
   | 'maskTextSelector'
+  | 'unmaskTextSelector'
   | 'inlineStylesheet'
   | 'maskInputOptions'
+  | 'maskAttributeFn'
   | 'maskTextFn'
   | 'maskInputFn'
   | 'keepIframeSrcFn'
@@ -151,6 +178,7 @@ export type MutationBufferParam = Pick<
   | 'shadowDomManager'
   | 'canvasManager'
   | 'processedNodeManager'
+  | 'ignoreCSSAttributes'
 >;
 
 export type ReplayPlugin = {

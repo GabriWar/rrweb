@@ -11,7 +11,13 @@ import type {
   IMirror,
 } from '@rrweb/types';
 import type { Mirror, SlimDOMOptions } from 'rrweb-snapshot';
-import { isShadowRoot, IGNORED_NODE, classMatchesRegex } from 'rrweb-snapshot';
+import {
+  isShadowRoot,
+  IGNORED_NODE,
+  classMatchesRegex,
+  createMatchPredicate,
+  distanceToMatch,
+} from 'rrweb-snapshot';
 import { RRNode, RRIFrameElement, BaseRRNode } from 'rrdom';
 import dom from '@rrweb/utils';
 
@@ -184,11 +190,16 @@ export function closestElementOfNode(node: Node | null): HTMLElement | null {
   if (!node) {
     return null;
   }
-  const el: HTMLElement | null =
-    node.nodeType === node.ELEMENT_NODE
-      ? (node as HTMLElement)
-      : dom.parentElement(node);
-  return el;
+  // Catch access to node properties to avoid Firefox "permission denied" errors
+  try {
+    const el: HTMLElement | null =
+      node.nodeType === node.ELEMENT_NODE
+        ? (node as HTMLElement)
+        : dom.parentElement(node);
+    return el;
+  } catch (error) {
+    return null;
+  }
 }
 
 /**
@@ -203,6 +214,7 @@ export function isBlocked(
   node: Node | null,
   blockClass: blockClass,
   blockSelector: string | null,
+  unblockSelector: string | null,
   checkAncestors: boolean,
 ): boolean {
   if (!node) {
@@ -214,21 +226,33 @@ export function isBlocked(
     return false;
   }
 
-  try {
-    if (typeof blockClass === 'string') {
-      if (el.classList.contains(blockClass)) return true;
-      if (checkAncestors && el.closest('.' + blockClass) !== null) return true;
-    } else {
-      if (classMatchesRegex(el, blockClass, checkAncestors)) return true;
-    }
-  } catch (e) {
-    // e
+  const blockedPredicate = createMatchPredicate(blockClass, blockSelector);
+
+  if (!checkAncestors) {
+    const isUnblocked = unblockSelector && el.matches(unblockSelector);
+
+    return blockedPredicate(el) && !isUnblocked;
   }
-  if (blockSelector) {
-    if (el.matches(blockSelector)) return true;
-    if (checkAncestors && el.closest(blockSelector) !== null) return true;
+
+  const blockDistance = distanceToMatch(el, blockedPredicate);
+  let unblockDistance = -1;
+
+  if (blockDistance < 0) {
+    return false;
   }
-  return false;
+
+  if (unblockSelector) {
+    unblockDistance = distanceToMatch(
+      el,
+      createMatchPredicate(null, unblockSelector),
+    );
+  }
+
+  if (blockDistance > -1 && unblockDistance < 0) {
+    return true;
+  }
+
+  return blockDistance < unblockDistance;
 }
 
 export function isSerialized(n: Node, mirror: Mirror): boolean {
@@ -556,4 +580,68 @@ export function inDom(n: Node): boolean {
   const doc = dom.ownerDocument(n);
   if (!doc) return false;
   return dom.contains(doc, n) || shadowHostInDom(n);
+}
+
+/**
+ * We generally want to use window.requestAnimationFrame / window.setTimeout / window.clearTimeout.
+ * However, in some cases this may be wrapped (e.g. by Zone.js for Angular),
+ * so we try to get an unpatched version of this from a sandboxed iframe.
+ */
+
+interface CacheableImplementations {
+  requestAnimationFrame: typeof requestAnimationFrame;
+  setTimeout: typeof setTimeout;
+  clearTimeout: typeof clearTimeout;
+}
+
+const cachedImplementations: Partial<CacheableImplementations> = {};
+
+function getImplementation<T extends keyof CacheableImplementations>(
+  name: T,
+): CacheableImplementations[T] {
+  const cached = cachedImplementations[name];
+  if (cached) {
+    return cached;
+  }
+
+  const document = window.document;
+  let impl = window[name] as CacheableImplementations[T];
+  if (document && typeof document.createElement === 'function') {
+    try {
+      const sandbox = document.createElement('iframe');
+      sandbox.hidden = true;
+      document.head.appendChild(sandbox);
+      const contentWindow = sandbox.contentWindow;
+      if (contentWindow && contentWindow[name]) {
+        impl =
+          // eslint-disable-next-line @typescript-eslint/unbound-method
+          contentWindow[name] as CacheableImplementations[T];
+      }
+      document.head.removeChild(sandbox);
+    } catch (e) {
+      // Could not create sandbox iframe, just use window.xxx
+    }
+  }
+
+  return (cachedImplementations[name] = impl.bind(
+    window,
+  ) as CacheableImplementations[T]);
+}
+
+export function onRequestAnimationFrame(
+  ...rest: Parameters<typeof requestAnimationFrame>
+): ReturnType<typeof requestAnimationFrame> {
+  return getImplementation('requestAnimationFrame')(...rest);
+}
+
+export function setTimeout(
+  ...rest: Parameters<typeof window.setTimeout>
+): ReturnType<typeof window.setTimeout> {
+  return getImplementation('setTimeout')(...rest);
+}
+
+export function clearTimeout(
+  ...rest: Parameters<typeof window.clearTimeout>
+): ReturnType<typeof window.clearTimeout> {
+  return getImplementation('clearTimeout')(...rest);
 }

@@ -1,14 +1,16 @@
-import { type Mirror as NodeMirror } from 'rrweb-snapshot';
-import { NodeType as RRNodeType } from '@rrweb/types';
+import {
+  NodeType as RRNodeType,
+  Mirror as NodeMirror,
+  elementNode,
+} from '@sentry-internal/rrweb-snapshot';
 import type {
   canvasMutationData,
   canvasEventWithTime,
-  elementNode,
   inputData,
   scrollData,
   styleDeclarationData,
   styleSheetRuleData,
-} from '@rrweb/types';
+} from '@sentry-internal/rrweb-types';
 import type {
   IRRCDATASection,
   IRRComment,
@@ -19,7 +21,6 @@ import type {
 } from './document';
 import type {
   RRCanvasElement,
-  RRDialogElement,
   RRElement,
   RRIFrameElement,
   RRMediaElement,
@@ -27,6 +28,7 @@ import type {
   RRDocument,
   Mirror,
 } from '.';
+import { getIFrameContentDocument } from './util';
 
 const NAMESPACES: Record<string, string> = {
   svg: 'http://www.w3.org/2000/svg',
@@ -169,8 +171,9 @@ function diffBeforeUpdatingChildren(
       const newRRElement = newTree as IRRElement;
       switch (newRRElement.tagName) {
         case 'IFRAME': {
-          const oldContentDocument = (oldTree as HTMLIFrameElement)
-            .contentDocument;
+          const oldContentDocument = getIFrameContentDocument(
+            oldTree as HTMLIFrameElement,
+          );
           // If the iframe is cross-origin, the contentDocument will be null.
           if (!oldContentDocument) break;
           // IFrame element doesn't have child nodes, so here we update its content document separately.
@@ -237,10 +240,28 @@ function diffAfterUpdatingChildren(
         case 'VIDEO': {
           const oldMediaElement = oldTree as HTMLMediaElement;
           const newMediaRRElement = newRRElement as unknown as RRMediaElement;
-          if (newMediaRRElement.paused !== undefined)
-            newMediaRRElement.paused
-              ? void oldMediaElement.pause()
-              : void oldMediaElement.play();
+          if (newMediaRRElement.paused !== undefined) {
+            const maybePromise = newMediaRRElement.paused
+              ? oldMediaElement.pause()
+              : oldMediaElement.play();
+
+            if (typeof maybePromise?.catch === 'function') {
+              maybePromise.catch((e) => {
+                console.warn(e);
+                // ignore rejections from play() as they are not useful and
+                // quite noisy. some examples:
+                // AbortError: The play() request was interrupted by a call to pause(). https://goo.gl/LdLk22
+                // AbortError: The play() request was interrupted by a new load request. https://goo.gl/LdLk22
+                // AbortError: The play() request was interrupted by a call to pause().
+                // NotAllowedError: play() failed because the user didn't interact with the document first. https://goo.gl/xX8pDD
+                // AbortError: The play() request was interrupted because the media was removed from the document.
+                // AbortError: The play() request was interrupted because video-only background media was paused to save power. https://goo.gl/LdLk22
+                // NotAllowedError: play() failed because the user didn't interact with the document first.
+                // NotAllowedError: play() can only be initiated by a user gesture.
+                // AbortError: The play() request was interrupted by end of playback. https://goo.gl/LdLk22
+              });
+            }
+          }
           if (newMediaRRElement.muted !== undefined)
             oldMediaElement.muted = newMediaRRElement.muted;
           if (newMediaRRElement.volume !== undefined)
@@ -249,8 +270,6 @@ function diffAfterUpdatingChildren(
             oldMediaElement.currentTime = newMediaRRElement.currentTime;
           if (newMediaRRElement.playbackRate !== undefined)
             oldMediaElement.playbackRate = newMediaRRElement.playbackRate;
-          if (newMediaRRElement.loop !== undefined)
-            oldMediaElement.loop = newMediaRRElement.loop;
           break;
         }
         case 'CANVAS': {
@@ -282,29 +301,6 @@ function diffAfterUpdatingChildren(
             (newTree as RRStyleElement).rules.forEach((data) =>
               replayer.applyStyleSheetMutation(data, styleSheet),
             );
-          break;
-        }
-        case 'DIALOG': {
-          const dialog = oldElement as HTMLDialogElement;
-          const rrDialog = newRRElement as unknown as RRDialogElement;
-          const wasOpen = dialog.open;
-          const wasModal = dialog.matches('dialog:modal');
-          const shouldBeOpen = rrDialog.open;
-          const shouldBeModal = rrDialog.isModal;
-
-          const modalChanged = wasModal !== shouldBeModal;
-          const openChanged = wasOpen !== shouldBeOpen;
-
-          if (modalChanged || (wasOpen && openChanged)) dialog.close();
-          if (shouldBeOpen && (openChanged || modalChanged)) {
-            try {
-              if (shouldBeModal) dialog.showModal();
-              else dialog.show();
-            } catch (e) {
-              console.warn(e);
-            }
-          }
-
           break;
         }
       }
@@ -366,6 +362,7 @@ function diffProps(
 
   for (const { name } of Array.from(oldAttributes))
     if (!(name in newAttributes)) oldTree.removeAttribute(name);
+
   newTree.scrollLeft && (oldTree.scrollLeft = newTree.scrollLeft);
   newTree.scrollTop && (oldTree.scrollTop = newTree.scrollTop);
 }
@@ -411,7 +408,7 @@ function diffChildren(
       nodeMatching(oldStartNode, newEndNode, replayer.mirror, rrnodeMirror)
     ) {
       try {
-        oldTree.insertBefore(oldStartNode, oldEndNode.nextSibling);
+        handleInsertBefore(oldTree, oldStartNode, oldEndNode.nextSibling);
       } catch (e) {
         console.warn(e);
       }
@@ -422,7 +419,7 @@ function diffChildren(
       nodeMatching(oldEndNode, newStartNode, replayer.mirror, rrnodeMirror)
     ) {
       try {
-        oldTree.insertBefore(oldEndNode, oldStartNode);
+        handleInsertBefore(oldTree, oldEndNode, oldStartNode);
       } catch (e) {
         console.warn(e);
       }
@@ -447,7 +444,7 @@ function diffChildren(
         nodeMatching(nodeToMove, newStartNode, replayer.mirror, rrnodeMirror)
       ) {
         try {
-          oldTree.insertBefore(nodeToMove, oldStartNode);
+          handleInsertBefore(oldTree, nodeToMove, oldStartNode);
         } catch (e) {
           console.warn(e);
         }
@@ -481,7 +478,7 @@ function diffChildren(
         }
 
         try {
-          oldTree.insertBefore(newNode, oldStartNode || null);
+          handleInsertBefore(oldTree, newNode, oldStartNode || null);
         } catch (e) {
           console.warn(e);
         }
@@ -503,7 +500,7 @@ function diffChildren(
         rrnodeMirror,
       );
       try {
-        oldTree.insertBefore(newNode, referenceNode);
+        handleInsertBefore(oldTree, newNode, referenceNode);
       } catch (e) {
         console.warn(e);
       }
@@ -610,4 +607,65 @@ export function nodeMatching(
   // thats why below we always check if an id is negative.
   if (node1Id === -1 || node1Id !== node2Id) return false;
   return sameNodeType(node1, node2);
+}
+
+/**
+ * Copies CSSRules and their position from HTML style element which don't exist in it's innerText
+ */
+function getInsertedStylesFromElement(
+  styleElement: HTMLStyleElement,
+): Array<{ index: number; cssRuleText: string }> | undefined {
+  const elementCssRules = styleElement.sheet?.cssRules;
+  if (!elementCssRules || !elementCssRules.length) return;
+  // style sheet w/ innerText styles to diff with actual and get only inserted styles
+  const tempStyleSheet = new CSSStyleSheet();
+  tempStyleSheet.replaceSync(styleElement.innerText);
+
+  const innerTextStylesMap: { [key: string]: CSSRule } = {};
+
+  for (let i = 0; i < tempStyleSheet.cssRules.length; i++) {
+    innerTextStylesMap[tempStyleSheet.cssRules[i].cssText] =
+      tempStyleSheet.cssRules[i];
+  }
+
+  const insertedStylesStyleSheet = [];
+
+  for (let i = 0; i < elementCssRules?.length; i++) {
+    const cssRuleText = elementCssRules[i].cssText;
+
+    if (!innerTextStylesMap[cssRuleText]) {
+      insertedStylesStyleSheet.push({
+        index: i,
+        cssRuleText,
+      });
+    }
+  }
+
+  return insertedStylesStyleSheet;
+}
+
+/**
+ * Conditionally copy insertedStyles for STYLE nodes and apply after calling insertBefore'
+ * For non-STYLE nodes, just insertBefore
+ */
+export function handleInsertBefore(
+  oldTree: Node,
+  nodeToMove: Node,
+  insertBeforeNode: Node | null,
+): void {
+  let insertedStyles;
+
+  if (nodeToMove.nodeName === 'STYLE') {
+    insertedStyles = getInsertedStylesFromElement(
+      nodeToMove as HTMLStyleElement,
+    );
+  }
+
+  oldTree.insertBefore(nodeToMove, insertBeforeNode);
+
+  if (insertedStyles && insertedStyles.length) {
+    insertedStyles.forEach(({ cssRuleText, index }) => {
+      (nodeToMove as HTMLStyleElement).sheet?.insertRule(cssRuleText, index);
+    });
+  }
 }

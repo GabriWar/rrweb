@@ -6,6 +6,7 @@ import type {
   KeepIframeSrcFn,
   ICanvas,
   DialogAttributes,
+  MaskAttributeFn,
 } from './types';
 import { NodeType } from '@rrweb/types';
 import type {
@@ -26,10 +27,17 @@ import {
   isNativeShadowDom,
   stringifyStylesheet,
   getInputType,
+  getInputValue,
   toLowerCase,
   extractFileExtension,
   absolutifyURLs,
   markCssSplits,
+  toUpperCase,
+  shouldMaskInput,
+  setTimeout,
+  clearTimeout,
+  getIFrameContentDocument,
+  getIFrameContentWindow,
 } from './utils';
 import dom from '@rrweb/utils';
 
@@ -61,6 +69,99 @@ function getValidTagName(element: HTMLElement): Lowercase<string> {
 
 let canvasService: HTMLCanvasElement | null;
 let canvasCtx: CanvasRenderingContext2D | null;
+
+const URL_IN_CSS_REF = /url\((?:(')([^']*)'|(")(.*?)"|([^)]*))\)/gm;
+const URL_PROTOCOL_MATCH = /^(?:[a-z+]+:)?\/\//i;
+const URL_WWW_MATCH = /^www\..*/i;
+const DATA_URI = /^(data:)([^,]*),(.*)/i;
+export function filterCSSPropertiesFromInlineStyle(
+  cssText: string,
+  ignoredProperties: Set<string>,
+): string {
+  if (!cssText || ignoredProperties.size === 0) {
+    return cssText;
+  }
+
+  try {
+    // Split CSS by semicolons to get individual property-value pairs
+    const properties = cssText.split(';');
+    const filteredProperties = [];
+
+    for (let property of properties) {
+      property = property.trim();
+      if (!property) continue;
+
+      const colonIndex = property.indexOf(':');
+      if (colonIndex === -1) {
+        // Invalid property, keep it as is
+        filteredProperties.push(property);
+        continue;
+      }
+
+      const propertyName = property.slice(0, colonIndex).trim();
+
+      // If this property is not in the ignore set, keep it
+      if (!ignoredProperties.has(propertyName)) {
+        filteredProperties.push(property);
+      }
+    }
+
+    return (
+      filteredProperties.join('; ') +
+      (filteredProperties.length > 0 && cssText.endsWith(';') ? ';' : '')
+    );
+  } catch (error) {
+    console.warn('Error filtering CSS properties:', error);
+    return cssText;
+  }
+}
+
+export function absoluteToStylesheet(
+  cssText: string | null,
+  href: string,
+): string {
+  return (cssText || '').replace(
+    URL_IN_CSS_REF,
+    (
+      origin: string,
+      quote1: string,
+      path1: string,
+      quote2: string,
+      path2: string,
+      path3: string,
+    ) => {
+      const filePath = path1 || path2 || path3;
+      const maybeQuote = quote1 || quote2 || '';
+      if (!filePath) {
+        return origin;
+      }
+      if (URL_PROTOCOL_MATCH.test(filePath) || URL_WWW_MATCH.test(filePath)) {
+        return `url(${maybeQuote}${filePath}${maybeQuote})`;
+      }
+      if (DATA_URI.test(filePath)) {
+        return `url(${maybeQuote}${filePath}${maybeQuote})`;
+      }
+      if (filePath[0] === '/') {
+        return `url(${maybeQuote}${
+          extractOrigin(href) + filePath
+        }${maybeQuote})`;
+      }
+      const stack = href.split('/');
+      const parts = filePath.split('/');
+      stack.pop();
+      for (const part of parts) {
+        if (part === '.') {
+          continue;
+        } else if (part === '..') {
+          stack.pop();
+        } else {
+          stack.push(part);
+        }
+      }
+      return `url(${maybeQuote}${stack.join('/')}${maybeQuote})`;
+    },
+  );
+}
 
 // eslint-disable-next-line no-control-regex
 const SRCSET_NOT_SPACES = /^[^ \t\n\r\u000c]+/; // Don't use \s, to avoid matching non-breaking space
@@ -175,6 +276,9 @@ export function transformAttribute(
   tagName: Lowercase<string>,
   name: Lowercase<string>,
   value: string | null,
+  element: HTMLElement,
+  maskAttributeFn: MaskAttributeFn | undefined,
+  ignoreCSSAttributes?: Set<string>,
 ): string | null {
   if (!value) {
     return value;
@@ -195,9 +299,21 @@ export function transformAttribute(
   } else if (name === 'srcset') {
     return getAbsoluteSrcsetString(doc, value);
   } else if (name === 'style') {
-    return absolutifyURLs(value, getHref(doc));
+    let processedStyle = absoluteToStylesheet(value, getHref(doc));
+    if (ignoreCSSAttributes && ignoreCSSAttributes.size > 0) {
+      processedStyle = filterCSSPropertiesFromInlineStyle(
+        processedStyle,
+        ignoreCSSAttributes,
+      );
+    }
+    return processedStyle;
   } else if (tagName === 'object' && name === 'data') {
     return absoluteToDoc(doc, value);
+  }
+
+  // Custom attribute masking
+  if (typeof maskAttributeFn === 'function') {
+    return maskAttributeFn(name, value, element);
   }
 
   return value;
@@ -216,8 +332,13 @@ export function _isBlockedElement(
   element: HTMLElement,
   blockClass: string | RegExp,
   blockSelector: string | null,
+  unblockSelector: string | null,
 ): boolean {
   try {
+    if (unblockSelector && element.matches(unblockSelector)) {
+      return false;
+    }
+
     if (typeof blockClass === 'string') {
       if (element.classList.contains(blockClass)) {
         return true;
@@ -240,32 +361,80 @@ export function _isBlockedElement(
   return false;
 }
 
+function elementClassMatchesRegex(el: HTMLElement, regex: RegExp): boolean {
+  for (let eIndex = el.classList.length; eIndex--; ) {
+    const className = el.classList[eIndex];
+    if (regex.test(className)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export function classMatchesRegex(
   node: Node | null,
   regex: RegExp,
   checkAncestors: boolean,
 ): boolean {
   if (!node) return false;
-  if (node.nodeType !== node.ELEMENT_NODE) {
-    if (!checkAncestors) return false;
-    return classMatchesRegex(dom.parentNode(node), regex, checkAncestors);
+  if (checkAncestors) {
+    return (
+      distanceToMatch(node, (node) =>
+        elementClassMatchesRegex(node as HTMLElement, regex),
+      ) >= 0
+    );
+  } else if (node.nodeType === node.ELEMENT_NODE) {
+    return elementClassMatchesRegex(node as HTMLElement, regex);
   }
+  return false;
+}
 
-  for (let eIndex = (node as HTMLElement).classList.length; eIndex--; ) {
-    const className = (node as HTMLElement).classList[eIndex];
-    if (regex.test(className)) {
-      return true;
+export function distanceToMatch(
+  node: Node | null,
+  matchPredicate: (node: Node) => boolean,
+  limit = Infinity,
+  distance = 0,
+): number {
+  if (!node) return -1;
+  if (node.nodeType !== node.ELEMENT_NODE) return -1;
+  if (distance > limit) return -1;
+  if (matchPredicate(node)) return distance;
+  return distanceToMatch(node.parentNode, matchPredicate, limit, distance + 1);
+}
+
+export function createMatchPredicate(
+  className: string | RegExp | null,
+  selector: string | null,
+): (node: Node) => boolean {
+  return (node: Node) => {
+    const el = node as HTMLElement;
+    if (el === null) return false;
+
+    try {
+      if (className) {
+        if (typeof className === 'string') {
+          if (el.matches(`.${className}`)) return true;
+        } else if (elementClassMatchesRegex(el, className)) {
+          return true;
+        }
+      }
+
+      if (selector && el.matches(selector)) return true;
+
+      return false;
+    } catch {
+      return false;
     }
-  }
-  if (!checkAncestors) return false;
-  return classMatchesRegex(dom.parentNode(node), regex, checkAncestors);
+  };
 }
 
 export function needMaskingText(
   node: Node,
   maskTextClass: string | RegExp,
   maskTextSelector: string | null,
-  checkAncestors: boolean,
+  unmaskTextClass: string | RegExp | null,
+  unmaskTextSelector: string | null,
+  maskAllText: boolean,
 ): boolean {
   let el: Element;
   if (isElement(node)) {
@@ -282,26 +451,78 @@ export function needMaskingText(
     el = dom.parentElement(node)!;
   }
   try {
+    if (el.tagName === 'INPUT') {
+      // Special cases: We want to enforce some masking for password & credit-card related fields,
+      // no matter the settings
+      const autocomplete = el.getAttribute('autocomplete');
+      const disallowedAutocompleteValues = [
+        'current-password',
+        'new-password',
+        'cc-number',
+        'cc-exp',
+        'cc-exp-month',
+        'cc-exp-year',
+        'cc-csc',
+      ];
+      if (disallowedAutocompleteValues.includes(autocomplete as string)) {
+        return true;
+      }
+    }
     if (typeof maskTextClass === 'string') {
       if (checkAncestors) {
         if (el.closest(`.${maskTextClass}`)) return true;
       } else {
         if (el.classList.contains(maskTextClass)) return true;
       }
-    } else {
-      if (classMatchesRegex(el, maskTextClass, checkAncestors)) return true;
     }
-    if (maskTextSelector) {
-      if (checkAncestors) {
-        if (el.closest(maskTextSelector)) return true;
-      } else {
-        if (el.matches(maskTextSelector)) return true;
+
+    let maskDistance = -1;
+    let unmaskDistance = -1;
+
+    if (maskAllText) {
+      unmaskDistance = distanceToMatch(
+        el,
+        createMatchPredicate(unmaskTextClass, unmaskTextSelector),
+      );
+
+      if (unmaskDistance < 0) {
+        return true;
       }
+
+      maskDistance = distanceToMatch(
+        el,
+        createMatchPredicate(maskTextClass, maskTextSelector),
+        unmaskDistance >= 0 ? unmaskDistance : Infinity,
+      );
+    } else {
+      maskDistance = distanceToMatch(
+        el,
+        createMatchPredicate(maskTextClass, maskTextSelector),
+      );
+
+      if (maskDistance < 0) {
+        return false;
+      }
+
+      unmaskDistance = distanceToMatch(
+        el,
+        createMatchPredicate(unmaskTextClass, unmaskTextSelector),
+        maskDistance >= 0 ? maskDistance : Infinity,
+      );
     }
+
+    return maskDistance >= 0
+      ? unmaskDistance >= 0
+        ? maskDistance <= unmaskDistance
+        : true
+      : unmaskDistance >= 0
+      ? false
+      : !!maskAllText;
   } catch (e) {
     //
   }
-  return false;
+
+  return !!maskAllText;
 }
 
 // https://stackoverflow.com/a/36155560
@@ -310,7 +531,7 @@ function onceIframeLoaded(
   listener: () => unknown,
   iframeLoadTimeout: number,
 ) {
-  const win = iframeEl.contentWindow;
+  const win = getIFrameContentWindow(iframeEl);
   if (!win) {
     return;
   }
@@ -364,7 +585,9 @@ function onceStylesheetLoaded(
   try {
     styleSheetLoaded = link.sheet;
   } catch (error) {
-    return;
+    // CORS stylesheets throw SecurityError when accessing .sheet
+    // before they're loaded — fall through to attach load listener
+    styleSheetLoaded = null;
   }
 
   if (styleSheetLoaded) return;
@@ -391,6 +614,13 @@ function serializeNode(
     blockClass: string | RegExp;
     blockSelector: string | null;
     needsMask: boolean;
+    unblockSelector: string | null;
+    maskAllText: boolean;
+    maskAttributeFn: MaskAttributeFn | undefined;
+    maskTextClass: string | RegExp;
+    unmaskTextClass: string | RegExp | null;
+    maskTextSelector: string | null;
+    unmaskTextSelector: string | null;
     inlineStylesheet: boolean;
     maskInputOptions: MaskInputOptions;
     maskTextFn: MaskTextFn | undefined;
@@ -404,6 +634,7 @@ function serializeNode(
      */
     newlyAddedElement?: boolean;
     cssCaptured?: boolean;
+    ignoreCSSAttributes?: Set<string>;
   },
 ): serializedNode | false {
   const {
@@ -411,7 +642,13 @@ function serializeNode(
     mirror,
     blockClass,
     blockSelector,
-    needsMask,
+    unblockSelector,
+    maskAllText,
+    maskAttributeFn,
+    maskTextClass,
+    unmaskTextClass,
+    maskTextSelector,
+    unmaskTextSelector,
     inlineStylesheet,
     maskInputOptions = {},
     maskTextFn,
@@ -422,6 +659,7 @@ function serializeNode(
     keepIframeSrcFn,
     newlyAddedElement = false,
     cssCaptured = false,
+    ignoreCSSAttributes,
   } = options;
   // Only record root id when document object is not the base document
   const rootId = getRootId(doc, mirror);
@@ -452,7 +690,9 @@ function serializeNode(
         doc,
         blockClass,
         blockSelector,
+        unblockSelector,
         inlineStylesheet,
+        maskAttributeFn,
         maskInputOptions,
         maskInputFn,
         dataURLOptions,
@@ -461,12 +701,24 @@ function serializeNode(
         keepIframeSrcFn,
         newlyAddedElement,
         rootId,
+        maskAllText,
+        maskTextClass,
+        unmaskTextClass,
+        maskTextSelector,
+        unmaskTextSelector,
+        ignoreCSSAttributes,
       });
     case n.TEXT_NODE:
       return serializeTextNode(n as Text, {
         doc,
-        needsMask,
+        maskAllText,
+        maskTextClass,
+        unmaskTextClass,
+        maskTextSelector,
+        unmaskTextSelector,
         maskTextFn,
+        maskInputOptions,
+        maskInputFn,
         rootId,
         cssCaptured,
       });
@@ -498,12 +750,31 @@ function serializeTextNode(
   options: {
     doc: Document;
     needsMask: boolean;
+    maskAllText: boolean;
+    maskTextClass: string | RegExp;
+    unmaskTextClass: string | RegExp | null;
+    maskTextSelector: string | null;
+    unmaskTextSelector: string | null;
     maskTextFn: MaskTextFn | undefined;
+    maskInputOptions: MaskInputOptions;
+    maskInputFn: MaskInputFn | undefined;
     rootId: number | undefined;
     cssCaptured?: boolean;
   },
 ): serializedNode {
-  const { needsMask, maskTextFn, rootId, cssCaptured } = options;
+  const {
+    needsMask,
+    maskAllText,
+    maskTextClass,
+    unmaskTextClass,
+    maskTextSelector,
+    unmaskTextSelector,
+    maskTextFn,
+    maskInputOptions,
+    maskInputFn,
+    rootId,
+    cssCaptured,
+  } = options;
   // The parent node may not be a html element which has a tagName attribute.
   // So just let it be undefined which is ok in this use case.
   const parent = dom.parentNode(n);
@@ -511,6 +782,28 @@ function serializeTextNode(
   let textContent: string | null = '';
   const isStyle = parentTagName === 'STYLE' ? true : undefined;
   const isScript = parentTagName === 'SCRIPT' ? true : undefined;
+  const isTextarea = parentTagName === 'TEXTAREA' ? true : undefined;
+  if (isStyle && textContent) {
+    try {
+      // try to read style sheet
+      if (n.nextSibling || n.previousSibling) {
+        // This is not the only child of the stylesheet.
+        // We can't read all of the sheet's .cssRules and expect them
+        // to _only_ include the current rule(s) added by the text node.
+        // So we'll be conservative and keep textContent as-is.
+      } else if ((n.parentNode as HTMLStyleElement).sheet?.cssRules) {
+        textContent = stringifyStylesheet(
+          (n.parentNode as HTMLStyleElement).sheet!,
+        );
+      }
+    } catch (err) {
+      console.warn(
+        `Cannot get CSS styles from text's parentNode. Error: ${err as string}`,
+        n,
+      );
+    }
+    textContent = absoluteToStylesheet(textContent, getHref(options.doc));
+  }
   if (isScript) {
     textContent = 'SCRIPT_PLACEHOLDER';
   } else if (!cssCaptured) {
@@ -523,10 +816,47 @@ function serializeTextNode(
       textContent = absolutifyURLs(textContent, getHref(options.doc));
     }
   }
-  if (!isStyle && !isScript && textContent && needsMask) {
+  const forceMask = needMaskingText(
+    n,
+    maskTextClass,
+    maskTextSelector,
+    unmaskTextClass,
+    unmaskTextSelector,
+    maskAllText,
+  );
+
+  if (!isStyle && !isScript && !isTextarea && textContent && forceMask) {
     textContent = maskTextFn
       ? maskTextFn(textContent, dom.parentElement(n))
       : textContent.replace(/[\S]/g, '*');
+  }
+  if (isTextarea && textContent && (maskInputOptions.textarea || forceMask)) {
+    textContent = maskInputFn
+      ? maskInputFn(textContent, n.parentNode as HTMLElement)
+      : textContent.replace(/[\S]/g, '*');
+  }
+
+  // Handle <option> text like an input value
+  if (parentTagName === 'OPTION' && textContent) {
+    const isInputMasked = shouldMaskInput({
+      type: null,
+      tagName: parentTagName,
+      maskInputOptions,
+    });
+
+    textContent = maskInputValue({
+      isMasked: needMaskingText(
+        n,
+        maskTextClass,
+        maskTextSelector,
+        unmaskTextClass,
+        unmaskTextSelector,
+        isInputMasked,
+      ),
+      element: n as unknown as HTMLElement,
+      value: textContent,
+      maskInputFn,
+    });
   }
 
   return {
@@ -542,7 +872,9 @@ function serializeElementNode(
     doc: Document;
     blockClass: string | RegExp;
     blockSelector: string | null;
+    unblockSelector: string | null;
     inlineStylesheet: boolean;
+    maskAttributeFn: MaskAttributeFn | undefined;
     maskInputOptions: MaskInputOptions;
     maskInputFn: MaskInputFn | undefined;
     dataURLOptions?: DataURLOptions;
@@ -554,14 +886,22 @@ function serializeElementNode(
      */
     newlyAddedElement?: boolean;
     rootId: number | undefined;
+    maskAllText: boolean;
+    maskTextClass: string | RegExp;
+    unmaskTextClass: string | RegExp | null;
+    maskTextSelector: string | null;
+    unmaskTextSelector: string | null;
+    ignoreCSSAttributes?: Set<string>;
   },
 ): serializedNode | false {
   const {
     doc,
     blockClass,
     blockSelector,
+    unblockSelector,
     inlineStylesheet,
     maskInputOptions = {},
+    maskAttributeFn,
     maskInputFn,
     dataURLOptions = {},
     inlineImages,
@@ -569,19 +909,34 @@ function serializeElementNode(
     keepIframeSrcFn,
     newlyAddedElement = false,
     rootId,
+    maskTextClass,
+    unmaskTextClass,
+    maskTextSelector,
+    unmaskTextSelector,
+    ignoreCSSAttributes,
   } = options;
-  const needBlock = _isBlockedElement(n, blockClass, blockSelector);
+  const needBlock = _isBlockedElement(
+    n,
+    blockClass,
+    blockSelector,
+    unblockSelector,
+  );
   const tagName = getValidTagName(n);
   let attributes: attributes = {};
   const len = n.attributes.length;
   for (let i = 0; i < len; i++) {
     const attr = n.attributes[i];
-    if (!ignoreAttribute(tagName, attr.name, attr.value)) {
+    // Looks like `attr.name` can be undefined although the types say differently
+    // see: https://github.com/getsentry/sentry-javascript/issues/10292
+    if (attr.name && !ignoreAttribute(tagName, attr.name, attr.value)) {
       attributes[attr.name] = transformAttribute(
         doc,
         tagName,
         toLowerCase(attr.name),
         attr.value,
+        n,
+        maskAttributeFn,
+        ignoreCSSAttributes,
       );
     }
   }
@@ -596,9 +951,10 @@ function serializeElementNode(
       cssText = stringifyStylesheet(stylesheet);
     }
     if (cssText) {
-      delete attributes.rel;
-      delete attributes.href;
-      attributes._cssText = cssText;
+      attributes.rel = null;
+      attributes.href = null;
+      attributes.crossorigin = null;
+      attributes._cssText = absoluteToStylesheet(cssText, stylesheet!.href!);
     }
   }
   if (tagName === 'style' && (n as HTMLStyleElement).sheet) {
@@ -613,25 +969,44 @@ function serializeElementNode(
     }
   }
   // form fields
-  if (['input', 'textarea', 'select'].includes(tagName)) {
-    const value = (n as HTMLInputElement | HTMLTextAreaElement).value;
-    const checked = (n as HTMLInputElement).checked;
-    if (
-      attributes.type !== 'radio' &&
-      attributes.type !== 'checkbox' &&
-      attributes.type !== 'submit' &&
-      attributes.type !== 'button' &&
-      value
-    ) {
+  if (
+    tagName === 'input' ||
+    tagName === 'textarea' ||
+    tagName === 'select' ||
+    tagName === 'option'
+  ) {
+    const el = n as
+      | HTMLInputElement
+      | HTMLTextAreaElement
+      | HTMLSelectElement
+      | HTMLOptionElement;
+
+    const type = getInputType(el);
+    const value = getInputValue(el, toUpperCase(tagName), type);
+    const checked = (el as HTMLInputElement).checked;
+    if (type !== 'submit' && type !== 'button' && value) {
+      const forceMask = needMaskingText(
+        el,
+        maskTextClass,
+        maskTextSelector,
+        unmaskTextClass,
+        unmaskTextSelector,
+        shouldMaskInput({
+          type,
+          tagName: toUpperCase(tagName),
+          maskInputOptions,
+        }),
+      );
+
+
       attributes.value = maskInputValue({
-        element: n,
-        type: getInputType(n),
-        tagName,
+        isMasked: forceMask,
+        element: el,
         value,
-        maskInputOptions,
         maskInputFn,
       });
-    } else if (checked) {
+    }
+    if (checked) {
       attributes.checked = checked;
     }
   }
@@ -735,11 +1110,7 @@ function serializeElementNode(
     mediaAttributes.rr_mediaState = (n as HTMLMediaElement).paused
       ? 'paused'
       : 'played';
-    mediaAttributes.rr_mediaCurrentTime = (n as HTMLMediaElement).currentTime;
-    mediaAttributes.rr_mediaPlaybackRate = (n as HTMLMediaElement).playbackRate;
-    mediaAttributes.rr_mediaMuted = (n as HTMLMediaElement).muted;
-    mediaAttributes.rr_mediaLoop = (n as HTMLMediaElement).loop;
-    mediaAttributes.rr_mediaVolume = (n as HTMLMediaElement).volume;
+    attributes.rr_mediaCurrentTime = (n as HTMLMediaElement).currentTime;
   }
   // Scroll
   if (!newlyAddedElement) {
@@ -765,7 +1136,9 @@ function serializeElementNode(
   }
   // iframe
   if (tagName === 'iframe' && !keepIframeSrcFn(attributes.src as string)) {
-    if (!(n as HTMLIFrameElement).contentDocument) {
+    // Don't try to access `contentDocument` if iframe is blocked, otherwise it
+    // will trigger browser warnings.
+    if (!needBlock && !getIFrameContentDocument(n as HTMLIFrameElement)) {
       // we can't record it directly as we can't see into it
       // preserve the src attribute so a decision can be taken at replay time
       attributes.rr_src = attributes.src;
@@ -842,7 +1215,7 @@ function slimDOMExcluded(
       (sn.tagName === 'script' ||
         // (module)preload link
         (sn.tagName === 'link' &&
-          ((sn.attributes.rel === 'preload' && sn.attributes.as === 'script') ||
+          (sn.attributes.rel === 'preload' ||
             sn.attributes.rel === 'modulepreload')) ||
         // prefetch link
         (sn.tagName === 'link' &&
@@ -926,13 +1299,17 @@ export function serializeNodeWithId(
     mirror: Mirror;
     blockClass: string | RegExp;
     blockSelector: string | null;
+    unblockSelector: string | null;
     maskTextClass: string | RegExp;
+    unmaskTextClass: string | RegExp | null;
     maskTextSelector: string | null;
+    unmaskTextSelector: string | null;
     skipChild: boolean;
     inlineStylesheet: boolean;
     newlyAddedElement?: boolean;
     maskInputOptions?: MaskInputOptions;
-    needsMask?: boolean;
+    maskAllText: boolean;
+    maskAttributeFn: MaskAttributeFn | undefined;
     maskTextFn: MaskTextFn | undefined;
     maskInputFn: MaskInputFn | undefined;
     slimDOMOptions: SlimDOMOptions;
@@ -947,12 +1324,18 @@ export function serializeNodeWithId(
       node: serializedElementNodeWithId,
     ) => unknown;
     iframeLoadTimeout?: number;
+    onBlockedImageLoad?: (
+      imageEl: HTMLImageElement,
+      node: serializedElementNodeWithId,
+      rect: DOMRect,
+    ) => unknown;
     onStylesheetLoad?: (
       linkNode: HTMLLinkElement,
       node: serializedElementNodeWithId,
     ) => unknown;
     stylesheetLoadTimeout?: number;
     cssCaptured?: boolean;
+    ignoreCSSAttributes?: Set<string>;
   },
 ): serializedNodeWithId | null {
   const {
@@ -960,11 +1343,16 @@ export function serializeNodeWithId(
     mirror,
     blockClass,
     blockSelector,
+    unblockSelector,
+    maskAllText,
     maskTextClass,
+    unmaskTextClass,
     maskTextSelector,
+    unmaskTextSelector,
     skipChild = false,
     inlineStylesheet = true,
     maskInputOptions = {},
+    maskAttributeFn,
     maskTextFn,
     maskInputFn,
     slimDOMOptions,
@@ -974,13 +1362,14 @@ export function serializeNodeWithId(
     onSerialize,
     onIframeLoad,
     iframeLoadTimeout = 5000,
+    onBlockedImageLoad,
     onStylesheetLoad,
     stylesheetLoadTimeout = 5000,
     keepIframeSrcFn = () => false,
     newlyAddedElement = false,
     cssCaptured = false,
+    ignoreCSSAttributes,
   } = options;
-  let { needsMask } = options;
   let { preserveWhiteSpace = true } = options;
 
   if (!needsMask) {
@@ -999,9 +1388,15 @@ export function serializeNodeWithId(
     mirror,
     blockClass,
     blockSelector,
-    needsMask,
+    maskAllText,
+    unblockSelector,
+    maskTextClass,
+    unmaskTextClass,
+    maskTextSelector,
+    unmaskTextSelector,
     inlineStylesheet,
     maskInputOptions,
+    maskAttributeFn,
     maskTextFn,
     maskInputFn,
     dataURLOptions,
@@ -1010,6 +1405,7 @@ export function serializeNodeWithId(
     keepIframeSrcFn,
     newlyAddedElement,
     cssCaptured,
+    ignoreCSSAttributes,
   });
   if (!_serializedNode) {
     // TODO: dev only
@@ -1025,7 +1421,8 @@ export function serializeNodeWithId(
     slimDOMExcluded(_serializedNode, slimDOMOptions) ||
     (!preserveWhiteSpace &&
       _serializedNode.type === NodeType.Text &&
-      !_serializedNode.textContent.replace(/^\s+|\s+$/gm, '').length)
+      !_serializedNode.isStyle &&
+      !_serializedNode.textContent.trim().length)
   ) {
     id = IGNORED_NODE;
   } else {
@@ -1070,12 +1467,16 @@ export function serializeNodeWithId(
       mirror,
       blockClass,
       blockSelector,
-      needsMask,
+      maskAllText,
+      unblockSelector,
       maskTextClass,
+      unmaskTextClass,
       maskTextSelector,
+      unmaskTextSelector,
       skipChild,
       inlineStylesheet,
       maskInputOptions,
+      maskAttributeFn,
       maskTextFn,
       maskInputFn,
       slimDOMOptions,
@@ -1086,10 +1487,12 @@ export function serializeNodeWithId(
       onSerialize,
       onIframeLoad,
       iframeLoadTimeout,
+      onBlockedImageLoad,
       onStylesheetLoad,
       stylesheetLoadTimeout,
       keepIframeSrcFn,
       cssCaptured: false,
+      ignoreCSSAttributes,
     };
 
     if (
@@ -1134,24 +1537,29 @@ export function serializeNodeWithId(
 
   if (
     serializedNode.type === NodeType.Element &&
-    serializedNode.tagName === 'iframe'
+    serializedNode.tagName === 'iframe' &&
+    !serializedNode.needBlock
   ) {
     onceIframeLoaded(
       n as HTMLIFrameElement,
       () => {
-        const iframeDoc = (n as HTMLIFrameElement).contentDocument;
+        const iframeDoc = getIFrameContentDocument(n as HTMLIFrameElement);
         if (iframeDoc && onIframeLoad) {
           const serializedIframeNode = serializeNodeWithId(iframeDoc, {
             doc: iframeDoc,
             mirror,
             blockClass,
             blockSelector,
-            needsMask,
+            unblockSelector,
+            maskAllText,
             maskTextClass,
+            unmaskTextClass,
             maskTextSelector,
+            unmaskTextSelector,
             skipChild: false,
             inlineStylesheet,
             maskInputOptions,
+            maskAttributeFn,
             maskTextFn,
             maskInputFn,
             slimDOMOptions,
@@ -1165,6 +1573,7 @@ export function serializeNodeWithId(
             onStylesheetLoad,
             stylesheetLoadTimeout,
             keepIframeSrcFn,
+            ignoreCSSAttributes,
           });
 
           if (serializedIframeNode) {
@@ -1177,6 +1586,35 @@ export function serializeNodeWithId(
       },
       iframeLoadTimeout,
     );
+  }
+
+  if (
+    serializedNode.type === NodeType.Element &&
+    serializedNode.tagName === 'img' &&
+    !(n as HTMLImageElement).complete &&
+    serializedNode.needBlock
+  ) {
+    const image = n as HTMLImageElement;
+    const updateImageDimensions = () => {
+      // Check if the element is still in the DOM and not already complete
+      if (image.isConnected && !image.complete && onBlockedImageLoad) {
+        try {
+          const rect = image.getBoundingClientRect();
+          // Only proceed if we have valid dimensions
+          if (rect.width > 0 && rect.height > 0) {
+            onBlockedImageLoad(image, serializedNode, rect);
+          }
+        } catch (error) {
+          // Silently handle errors from getBoundingClientRect
+        }
+      }
+      image.removeEventListener('load', updateImageDimensions);
+    };
+
+    // Only add listener if element is still in DOM
+    if (image.isConnected) {
+      image.addEventListener('load', updateImageDimensions);
+    }
   }
 
   // <link rel=stylesheet href=...>
@@ -1198,12 +1636,16 @@ export function serializeNodeWithId(
             mirror,
             blockClass,
             blockSelector,
-            needsMask,
+            unblockSelector,
+            maskAllText,
             maskTextClass,
+            unmaskTextClass,
             maskTextSelector,
+            unmaskTextSelector,
             skipChild: false,
             inlineStylesheet,
             maskInputOptions,
+            maskAttributeFn,
             maskTextFn,
             maskInputFn,
             slimDOMOptions,
@@ -1217,6 +1659,7 @@ export function serializeNodeWithId(
             onStylesheetLoad,
             stylesheetLoadTimeout,
             keepIframeSrcFn,
+            ignoreCSSAttributes,
           });
 
           if (serializedLinkNode) {
@@ -1231,6 +1674,11 @@ export function serializeNodeWithId(
     );
   }
 
+  if (serializedNode.type === NodeType.Element) {
+    // this property was not needed in replay side
+    delete serializedNode.needBlock;
+  }
+
   return serializedNode;
 }
 
@@ -1240,10 +1688,15 @@ function snapshot(
     mirror?: Mirror;
     blockClass?: string | RegExp;
     blockSelector?: string | null;
+    unblockSelector?: string | null;
+    maskAllText?: boolean;
     maskTextClass?: string | RegExp;
+    unmaskTextClass?: string | RegExp | null;
     maskTextSelector?: string | null;
+    unmaskTextSelector?: string | null;
     inlineStylesheet?: boolean;
     maskAllInputs?: boolean | MaskInputOptions;
+    maskAttributeFn?: MaskAttributeFn;
     maskTextFn?: MaskTextFn;
     maskInputFn?: MaskInputFn;
     slimDOM?: 'all' | boolean | SlimDOMOptions;
@@ -1257,24 +1710,35 @@ function snapshot(
       node: serializedElementNodeWithId,
     ) => unknown;
     iframeLoadTimeout?: number;
+    onBlockedImageLoad?: (
+      imageEl: HTMLImageElement,
+      node: serializedElementNodeWithId,
+      rect: DOMRect,
+    ) => unknown;
     onStylesheetLoad?: (
       linkNode: HTMLLinkElement,
       node: serializedElementNodeWithId,
     ) => unknown;
     stylesheetLoadTimeout?: number;
     keepIframeSrcFn?: KeepIframeSrcFn;
+    ignoreCSSAttributes?: Set<string>;
   },
 ): serializedNodeWithId | null {
   const {
     mirror = new Mirror(),
     blockClass = 'rr-block',
     blockSelector = null,
+    unblockSelector = null,
+    maskAllText = false,
     maskTextClass = 'rr-mask',
+    unmaskTextClass = null,
     maskTextSelector = null,
+    unmaskTextSelector = null,
     inlineStylesheet = true,
     inlineImages = false,
     recordCanvas = false,
     maskAllInputs = false,
+    maskAttributeFn,
     maskTextFn,
     maskInputFn,
     slimDOM = false,
@@ -1283,9 +1747,11 @@ function snapshot(
     onSerialize,
     onIframeLoad,
     iframeLoadTimeout,
+    onBlockedImageLoad,
     onStylesheetLoad,
     stylesheetLoadTimeout,
     keepIframeSrcFn = () => false,
+    ignoreCSSAttributes = new Set([]),
   } = options || {};
   const maskInputOptions: MaskInputOptions =
     maskAllInputs === true
@@ -1305,12 +1771,9 @@ function snapshot(
           week: true,
           textarea: true,
           select: true,
-          password: true,
         }
       : maskAllInputs === false
-      ? {
-          password: true,
-        }
+      ? {}
       : maskAllInputs;
   const slimDOMOptions = slimDOMDefaults(slimDOM);
 
@@ -1319,11 +1782,16 @@ function snapshot(
     mirror,
     blockClass,
     blockSelector,
+    unblockSelector,
+    maskAllText,
     maskTextClass,
+    unmaskTextClass,
     maskTextSelector,
+    unmaskTextSelector,
     skipChild: false,
     inlineStylesheet,
     maskInputOptions,
+    maskAttributeFn,
     maskTextFn,
     maskInputFn,
     slimDOMOptions,
@@ -1334,10 +1802,12 @@ function snapshot(
     onSerialize,
     onIframeLoad,
     iframeLoadTimeout,
+    onBlockedImageLoad,
     onStylesheetLoad,
     stylesheetLoadTimeout,
     keepIframeSrcFn,
     newlyAddedElement: false,
+    ignoreCSSAttributes,
   });
 }
 

@@ -10,6 +10,8 @@ import {
   isNativeShadowDom,
   getInputType,
   toLowerCase,
+  getInputValue,
+  shouldMaskInput,
 } from 'rrweb-snapshot';
 import type { observerParam, MutationBufferParam } from '../types';
 import type {
@@ -19,6 +21,7 @@ import type {
   removedNodeMutation,
   addedNodeMutation,
   Optional,
+  IWindow,
 } from '@rrweb/types';
 import {
   isBlocked,
@@ -33,6 +36,12 @@ import {
   closestElementOfNode,
 } from '../utils';
 import dom from '@rrweb/utils';
+import { StyleDeclarationParser } from './style-declaration-parser';
+
+import {
+  getIFrameContentDocument,
+  getIFrameContentWindow,
+} from 'rrdom';
 
 type DoubleLinkedListNode = {
   previous: DoubleLinkedListNode | null;
@@ -174,10 +183,15 @@ export default class MutationBuffer {
   private mutationCb: observerParam['mutationCb'];
   private blockClass: observerParam['blockClass'];
   private blockSelector: observerParam['blockSelector'];
+  private unblockSelector: observerParam['unblockSelector'];
+  private maskAllText: observerParam['maskAllText'];
   private maskTextClass: observerParam['maskTextClass'];
+  private unmaskTextClass: observerParam['unmaskTextClass'];
   private maskTextSelector: observerParam['maskTextSelector'];
+  private unmaskTextSelector: observerParam['unmaskTextSelector'];
   private inlineStylesheet: observerParam['inlineStylesheet'];
   private maskInputOptions: observerParam['maskInputOptions'];
+  private maskAttributeFn: observerParam['maskAttributeFn'];
   private maskTextFn: observerParam['maskTextFn'];
   private maskInputFn: observerParam['maskInputFn'];
   private keepIframeSrcFn: observerParam['keepIframeSrcFn'];
@@ -192,7 +206,8 @@ export default class MutationBuffer {
   private shadowDomManager: observerParam['shadowDomManager'];
   private canvasManager: observerParam['canvasManager'];
   private processedNodeManager: observerParam['processedNodeManager'];
-  private unattachedDoc: HTMLDocument;
+  private ignoreCSSAttributes: observerParam['ignoreCSSAttributes'];
+  private styleDeclarationParser!: StyleDeclarationParser;
 
   public init(options: MutationBufferParam) {
     (
@@ -200,10 +215,15 @@ export default class MutationBuffer {
         'mutationCb',
         'blockClass',
         'blockSelector',
+        'unblockSelector',
+        'maskAllText',
         'maskTextClass',
+        'unmaskTextClass',
         'maskTextSelector',
+        'unmaskTextSelector',
         'inlineStylesheet',
         'maskInputOptions',
+        'maskAttributeFn',
         'maskTextFn',
         'maskInputFn',
         'keepIframeSrcFn',
@@ -218,11 +238,14 @@ export default class MutationBuffer {
         'shadowDomManager',
         'canvasManager',
         'processedNodeManager',
+        'ignoreCSSAttributes',
       ] as const
     ).forEach((key) => {
       // just a type trick, the runtime result is correct
       this[key] = options[key] as never;
     });
+
+    this.styleDeclarationParser = new StyleDeclarationParser(this.doc);
   }
 
   public freeze() {
@@ -317,12 +340,17 @@ export default class MutationBuffer {
         mirror: this.mirror,
         blockClass: this.blockClass,
         blockSelector: this.blockSelector,
+        maskAllText: this.maskAllText,
+        unblockSelector: this.unblockSelector,
         maskTextClass: this.maskTextClass,
+        unmaskTextClass: this.unmaskTextClass,
         maskTextSelector: this.maskTextSelector,
+        unmaskTextSelector: this.unmaskTextSelector,
         skipChild: true,
         newlyAddedElement: true,
         inlineStylesheet: this.inlineStylesheet,
         maskInputOptions: this.maskInputOptions,
+        maskAttributeFn: this.maskAttributeFn,
         maskTextFn: this.maskTextFn,
         maskInputFn: this.maskInputFn,
         slimDOMOptions: this.slimDOMOptions,
@@ -330,7 +358,16 @@ export default class MutationBuffer {
         recordCanvas: this.recordCanvas,
         inlineImages: this.inlineImages,
         onSerialize: (currentN) => {
-          if (isSerializedIframe(currentN, this.mirror)) {
+          if (
+            isSerializedIframe(currentN, this.mirror) &&
+            !isBlocked(
+              currentN,
+              this.blockClass,
+              this.blockSelector,
+              this.unblockSelector,
+              false,
+            )
+          ) {
             this.iframeManager.addIframe(currentN as HTMLIFrameElement);
           }
           if (isSerializedStylesheet(currentN, this.mirror)) {
@@ -344,13 +381,48 @@ export default class MutationBuffer {
           }
         },
         onIframeLoad: (iframe, childSn) => {
+          if (
+            isBlocked(
+              iframe,
+              this.blockClass,
+              this.blockSelector,
+              this.unblockSelector,
+              false,
+            )
+          ) {
+            return;
+          }
+
           this.iframeManager.attachIframe(iframe, childSn);
+          const contentWindow = getIFrameContentWindow(iframe);
+          if (contentWindow) {
+            this.canvasManager.addWindow(contentWindow as IWindow);
+          }
           this.shadowDomManager.observeAttachShadow(iframe);
         },
         onStylesheetLoad: (link, childSn) => {
           this.stylesheetManager.attachLinkElement(link, childSn);
         },
         cssCaptured,
+        onBlockedImageLoad: (_imageEl, serializedNode, { width, height }) => {
+          this.mutationCb({
+            adds: [],
+            removes: [],
+            texts: [],
+            attributes: [
+              {
+                id: serializedNode.id,
+                attributes: {
+                  style: {
+                    width: `${width}px`,
+                    height: `${height}px`,
+                  },
+                },
+              },
+            ],
+          });
+        },
+        ignoreCSSAttributes: this.ignoreCSSAttributes,
       });
       if (sn) {
         adds.push({
@@ -547,6 +619,7 @@ export default class MutationBuffer {
     });
   };
 
+
   private processMutation = (m: mutationRecord) => {
     if (isIgnored(m.target, this.mirror, this.slimDOMOptions)) {
       return;
@@ -556,7 +629,13 @@ export default class MutationBuffer {
         const value = dom.textContent(m.target);
 
         if (
-          !isBlocked(m.target, this.blockClass, this.blockSelector, false) &&
+          !isBlocked(
+            m.target,
+            this.blockClass,
+            this.blockSelector,
+            this.unblockSelector,
+            false,
+          ) &&
           value !== m.oldValue
         ) {
           this.texts.push({
@@ -565,7 +644,9 @@ export default class MutationBuffer {
                 m.target,
                 this.maskTextClass,
                 this.maskTextSelector,
-                true, // checkAncestors
+                this.unmaskTextClass,
+                this.unmaskTextSelector,
+                this.maskAllText,
               ) && value
                 ? this.maskTextFn
                   ? this.maskTextFn(value, closestElementOfNode(m.target))
@@ -576,6 +657,7 @@ export default class MutationBuffer {
         }
         break;
       }
+
       case 'attributes': {
         const target = m.target as HTMLElement;
         let attributeName = m.attributeName as string;
@@ -583,18 +665,39 @@ export default class MutationBuffer {
 
         if (attributeName === 'value') {
           const type = getInputType(target);
+          const tagName = target.tagName as unknown as Uppercase<string>;
+          value = getInputValue(target as HTMLInputElement, tagName, type);
+
+          const isInputMasked = shouldMaskInput({
+            maskInputOptions: this.maskInputOptions,
+            tagName,
+            type,
+          });
+
+          const forceMask = needMaskingText(
+            m.target,
+            this.maskTextClass,
+            this.maskTextSelector,
+            this.unmaskTextClass,
+            this.unmaskTextSelector,
+            isInputMasked,
+          );
 
           value = maskInputValue({
+            isMasked: forceMask,
             element: target,
-            maskInputOptions: this.maskInputOptions,
-            tagName: target.tagName,
-            type,
             value,
             maskInputFn: this.maskInputFn,
           });
         }
         if (
-          isBlocked(m.target, this.blockClass, this.blockSelector, false) ||
+          isBlocked(
+            m.target,
+            this.blockClass,
+            this.blockSelector,
+            this.unblockSelector,
+            false,
+          ) ||
           value === m.oldValue
         ) {
           return;
@@ -606,7 +709,10 @@ export default class MutationBuffer {
           attributeName === 'src' &&
           !this.keepIframeSrcFn(value as string)
         ) {
-          if (!(target as HTMLIFrameElement).contentDocument) {
+          const iframeDoc = getIFrameContentDocument(
+            target as HTMLIFrameElement,
+          );
+          if (!iframeDoc) {
             // we can't record it directly as we can't see into it
             // preserve the src attribute so a decision can be taken at replay time
             attributeName = 'rr_src';
@@ -642,28 +748,19 @@ export default class MutationBuffer {
             toLowerCase(target.tagName),
             toLowerCase(attributeName),
             value,
+            target,
+            this.maskAttributeFn,
           );
           if (attributeName === 'style') {
-            if (!this.unattachedDoc) {
-              try {
-                // avoid upsetting original document from a Content Security point of view
-                this.unattachedDoc =
-                  document.implementation.createHTMLDocument();
-              } catch (e) {
-                // fallback to more direct method
-                this.unattachedDoc = this.doc;
-              }
-            }
-            const old = this.unattachedDoc.createElement('span');
-            if (m.oldValue) {
-              old.setAttribute('style', m.oldValue);
-            }
+            const oldStyle = m.oldValue
+              ? this.styleDeclarationParser.parse(m.oldValue)
+              : null;
             for (const pname of Array.from(target.style)) {
               const newValue = target.style.getPropertyValue(pname);
               const newPriority = target.style.getPropertyPriority(pname);
               if (
-                newValue !== old.style.getPropertyValue(pname) ||
-                newPriority !== old.style.getPropertyPriority(pname)
+                newValue !== (oldStyle?.getPropertyValue(pname) || '') ||
+                newPriority !== (oldStyle?.getPropertyPriority(pname) || '')
               ) {
                 if (newPriority === '') {
                   item.styleDiff[pname] = newValue;
@@ -675,10 +772,12 @@ export default class MutationBuffer {
                 item._unchangedStyles[pname] = [newValue, newPriority];
               }
             }
-            for (const pname of Array.from(old.style)) {
-              if (target.style.getPropertyValue(pname) === '') {
-                // "if not set, returns the empty string"
-                item.styleDiff[pname] = false; // delete
+            if (oldStyle) {
+              for (const pname of Array.from(oldStyle)) {
+                if (target.style.getPropertyValue(pname) === '') {
+                  // "if not set, returns the empty string"
+                  item.styleDiff[pname] = false; // delete
+                }
               }
             }
           } else if (attributeName === 'open' && target.tagName === 'DIALOG') {
@@ -695,13 +794,16 @@ export default class MutationBuffer {
         /**
          * Parent is blocked, ignore all child mutations
          */
-        if (isBlocked(m.target, this.blockClass, this.blockSelector, true))
+        if (
+          isBlocked(
+            m.target,
+            this.blockClass,
+            this.blockSelector,
+            this.unblockSelector,
+            true,
+          )
+        ) {
           return;
-
-        if ((m.target as Element).tagName === 'TEXTAREA') {
-          // children would be ignored in genAdds as they aren't in the mirror
-          this.genTextAreaValueMutation(m.target as HTMLTextAreaElement);
-          return; // any removedNodes won't have been in mirror either
         }
 
         m.addedNodes.forEach((n) => this.genAdds(n, m.target));
@@ -711,7 +813,13 @@ export default class MutationBuffer {
             ? this.mirror.getId(dom.host(m.target))
             : this.mirror.getId(m.target);
           if (
-            isBlocked(m.target, this.blockClass, this.blockSelector, false) ||
+            isBlocked(
+              m.target,
+              this.blockClass,
+              this.blockSelector,
+              this.unblockSelector,
+              false,
+            ) ||
             isIgnored(n, this.mirror, this.slimDOMOptions) ||
             !isSerialized(n, this.mirror)
           ) {
@@ -790,7 +898,15 @@ export default class MutationBuffer {
 
     // if this node is blocked `serializeNode` will turn it into a placeholder element
     // but we have to remove it's children otherwise they will be added as placeholders too
-    if (!isBlocked(n, this.blockClass, this.blockSelector, false)) {
+    if (
+      !isBlocked(
+        n,
+        this.blockClass,
+        this.blockSelector,
+        this.unblockSelector,
+        false,
+      )
+    ) {
       dom.childNodes(n).forEach((childN) => this.genAdds(childN));
       if (hasShadowRoot(n)) {
         // eslint-disable-next-line @typescript-eslint/no-non-null-assertion

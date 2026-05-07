@@ -1,4 +1,4 @@
-name: Tests
+name: Build & Tests
 
 on:
   push:
@@ -11,11 +11,11 @@ on:
 concurrency: ${{ github.workflow }}-${{ github.ref }}
 
 jobs:
-  release:
+  job_test:
     name: Tests
+    runs-on: ubuntu-latest
     permissions:
       contents: read
-    runs-on: ubuntu-latest
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v3
@@ -23,22 +23,18 @@ jobs:
           # This makes Actions fetch all Git history so that Changesets can generate changelogs with the correct commits
           fetch-depth: 0
 
-      - name: Setup Node.js lts/*
-        uses: actions/setup-node@v3
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
         with:
-          node-version: lts/*
+          node-version: 20
           cache: 'yarn'
 
       - name: Install Dependencies
-        run: yarn install --frozen-lockfile
-        env:
-          PUPPETEER_DOWNLOAD_BASE_URL: 'https://storage.googleapis.com/chrome-for-testing-public'
+        run: yarn install --frozen-lockfile --network-timeout 300000
+        timeout-minutes: 10
 
       - name: Build Project
         run: NODE_OPTIONS='--max-old-space-size=4096' yarn build:all
-
-      - name: Install Playwright browsers
-        run: cd packages/rrvideo && yarn playwright install chromium
 
       - name: Check types
         run: yarn check-types
@@ -52,5 +48,42 @@ jobs:
         if: failure()
         with:
           name: image-diff
-          path: packages/**/__image_snapshots__/__diff_output__/*.png
+          path: packages/rrweb/test/*/__image_snapshots__/__diff_output__/*.png
           if-no-files-found: ignore
+
+  job_artifacts:
+    needs: job_test
+    name: Upload Artifacts
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    # Build artifacts are only needed for releasing workflow.
+    if: startsWith(github.ref, 'refs/heads/release/')
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v3
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'yarn'
+
+      - name: Install Dependencies
+        run: yarn install --frozen-lockfile --network-timeout 300000
+        timeout-minutes: 10
+
+      - name: Build Project
+        run: NODE_OPTIONS='--max-old-space-size=4096' yarn build:all
+
+      - name: Build Tarballs
+        env:
+          NODE_OPTIONS: '--max_old_space_size=4096'
+        run: yarn build:tarball
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ github.sha }}
+          path: |
+            ${{ github.workspace }}/packages/**/*.tgz

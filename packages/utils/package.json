@@ -12,6 +12,7 @@
     "dev": "vite build --watch",
     "build": "tsc -noEmit && vite build",
     "check-types": "tsc -noEmit",
+    "prepack": "npm run build",
     "prepublish": "npm run build",
     "lint": "yarn eslint src/**/*.ts"
   },

@@ -42,7 +42,6 @@
     "url": "https://github.com/rrweb-io/rrweb/issues"
   },
   "devDependencies": {
-    "@rrweb/types": "2.42.0",
     "@typescript-eslint/eslint-plugin": "^5.23.0",
     "@typescript-eslint/parser": "^5.23.0",
     "eslint": "^8.15.0",

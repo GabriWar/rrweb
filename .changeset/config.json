@@ -10,7 +10,9 @@
       "rrdom-nodejs",
       "rrweb-player",
       "@rrweb/types",
-      "@rrweb/web-extension"
+      "@rrweb/web-extension",
+      "@rrweb/rrweb-plugin-network-record",
+      "@rrweb/rrweb-plugin-network-replay"
     ]
   ],
   "linked": [],

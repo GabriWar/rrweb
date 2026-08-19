@@ -189,7 +189,7 @@ function isRequest(value: unknown): value is Request {
   }
 }
 
-function isBlobUrl(url?: string | URL | RequestInfo) {
+function isBlobUrl(url?: string | URL | RequestInfo): boolean {
   try {
     if (typeof url === 'string') {
       return url.startsWith('blob:');

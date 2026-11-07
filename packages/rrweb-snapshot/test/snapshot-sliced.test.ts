@@ -154,6 +154,84 @@ describe('snapshotSliced (RR-017)', () => {
     expect(new Set(rules).size).toBe(rules.length);
   });
 
+  /** ids renumbered in DFS order: a dropped subtree consumed ids the other run never handed out */
+  function renumber(sn: serializedNodeWithId | null): string {
+    let next = 1;
+    const walk = (n: serializedNodeWithId): unknown => {
+      const out: Record<string, unknown> = { ...n, id: next++ };
+      if ('childNodes' in n) out.childNodes = n.childNodes.map(walk);
+      return out;
+    };
+    return JSON.stringify(sn && walk(sn));
+  }
+
+  it.each([
+    ['class', (el: Element) => el.classList.add('rr-block')],
+    ['selector', (el: Element) => el.setAttribute('data-block', '')],
+  ])(
+    'an ancestor blocked (%s) between slices: none of its children is serialized, same as snapshot() after the change (privacy fix 2)',
+    async (_how, block) => {
+      const html =
+        '<div id="p"><span id="s1">secret one</span><span id="s2">secret two</span>' +
+        '<b id="s3"><i>secret three</i></b></div><div id="q"><p id="after">after</p></div>';
+      const doc = load(html);
+      const mirror = new Mirror();
+      let blocked = false;
+      cleanupSnapshot();
+      const sn = await snapshotSliced(
+        doc,
+        { ...OPTIONS, mirror },
+        {
+          shouldYield: () => true,
+          yieldSlice: async () => {
+            // #s1 and its text are serialized, #s2 / #s3 still queued
+            if (!blocked && mirror.hasNode(doc.getElementById('s1')!.firstChild!)) {
+              block(doc.getElementById('p')!);
+              blocked = true;
+            }
+          },
+        },
+      );
+      expect(blocked).toBe(true);
+      const json = JSON.stringify(sn);
+      expect(json).not.toContain('secret');
+      expect(json).not.toMatch(/"id":"s[123]"/);
+      expect(json).toContain('"rr_width"');
+      expect(json).toContain('"id":"after"');
+      // the dropped nodes are out of the mirror: later mutations of them are filtered
+      expect(mirror.has(mirror.getId(doc.getElementById('s1')!))).toBe(false);
+      expect(mirror.has(mirror.getId(doc.getElementById('s1')!.firstChild!))).toBe(false);
+      expect(mirror.has(mirror.getId(doc.getElementById('p')!))).toBe(true);
+      // what the synchronous snapshot of the changed page gives
+      cleanupSnapshot();
+      const after = snapshot(doc, { ...OPTIONS, mirror: new Mirror() });
+      expect(renumber(sn)).toBe(renumber(after));
+    },
+  );
+
+  it('a block on an element whose children are all done stays a capture of the earlier state', async () => {
+    const doc = load('<div id="p"><span>one</span></div><div id="q"><p>x</p><p>y</p></div>');
+    const mirror = new Mirror();
+    let blocked = false;
+    cleanupSnapshot();
+    const sn = await snapshotSliced(
+      doc,
+      { ...OPTIONS, mirror },
+      {
+        shouldYield: () => true,
+        yieldSlice: async () => {
+          if (!blocked && mirror.hasNode(doc.querySelector('#q p')!)) {
+            doc.getElementById('p')!.classList.add('rr-block');
+            blocked = true;
+          }
+        },
+      },
+    );
+    expect(blocked).toBe(true);
+    // the mutation buffer records the class change; the snapshot holds what was read
+    expect(JSON.stringify(sn)).toContain('"textContent":"one"');
+  });
+
   it('completes when the slicer stops yielding (starvation guard on the recorder side)', async () => {
     const doc = load('<div>' + '<p>n</p>'.repeat(200) + '</div>');
     const expected = syncJson(doc);

@@ -2012,6 +2012,40 @@ export async function snapshotSliced(
       markShadow,
     });
   };
+  /**
+   * The page ran during the yield: an open ancestor may have become blocked
+   * (block class / selector added between slices). Its queued children must
+   * not be serialized and the ones already serialized are dropped, so the
+   * output is what a synchronous snapshot taken now gives for that element:
+   * the blocked placeholder, no children (privacy, TOCTOU). The dropped
+   * nodes leave the mirror too, so later text / attribute mutations of them
+   * are filtered out like for any node a snapshot never saw.
+   */
+  const { blockClass, blockSelector, unblockSelector, mirror } = rootOptions;
+  const recheckBlocked = () => {
+    for (let k = 0; k < stack.length; k++) {
+      const f = stack[k];
+      if (
+        !isElement(f.n) ||
+        !_isBlockedElement(
+          f.n as HTMLElement,
+          blockClass,
+          blockSelector,
+          unblockSelector,
+        )
+      )
+        continue;
+      stack.length = k;
+      forgetChildren(f.sn, mirror);
+      // same id (the mirror has the node), no second onSerialize
+      const head = serializeNodeHead(f.n, { ...f.options, onSerialize: undefined });
+      const sn = f.sn as unknown as Record<string, unknown>;
+      for (const key of Object.keys(sn)) delete sn[key];
+      if (head) Object.assign(sn, head.serializedNode);
+      finish(f.n, f.sn, f.options, f.markShadow);
+      return;
+    }
+  };
   open(n, root, rootOptions, false);
   while (stack.length) {
     const f = stack[stack.length - 1];
@@ -2029,7 +2063,10 @@ export async function snapshotSliced(
           f.parent !== f.n && isNativeShadowDom(f.parent as ShadowRoot);
         open(child, head, f.childOptions, shadowChild);
       }
-      if (slicer.shouldYield()) await slicer.yieldSlice();
+      if (slicer.shouldYield()) {
+        await slicer.yieldSlice();
+        recheckBlocked();
+      }
       continue;
     }
     if (!f.shadowStarted) {
@@ -2046,6 +2083,16 @@ export async function snapshotSliced(
     finish(f.n, f.sn, f.options, f.markShadow);
   }
   return root.serializedNode;
+}
+
+/** Remove every node serialized under `sn` from the mirror (not `sn` itself). */
+function forgetChildren(sn: serializedNodeWithId, mirror: Mirror) {
+  if (sn.type !== NodeType.Document && sn.type !== NodeType.Element) return;
+  for (const child of sn.childNodes) {
+    forgetChildren(child, mirror);
+    const node = mirror.getNode(child.id);
+    if (node) mirror.removeNodeFromMap(node);
+  }
 }
 
 export function visitSnapshot(

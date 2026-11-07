@@ -17,7 +17,7 @@ import {
   createMatchPredicate,
   distanceToMatch,
 } from 'rrweb-snapshot';
-import { RRNode, RRIFrameElement, BaseRRNode } from 'rrdom';
+import type { RRNode, RRIFrameElement } from 'rrdom';
 import dom from '@rrweb/utils';
 
 export function on(
@@ -437,8 +437,11 @@ export function hasShadowRoot<T extends Node | RRNode>(
   n: T,
 ): n is T & { shadowRoot: ShadowRoot } {
   if (!n) return false;
-  if (n instanceof BaseRRNode && 'shadowRoot' in n) {
-    return Boolean(n.shadowRoot);
+  // RRNodes (replay's virtual DOM) carry RRNodeType; checking the field
+  // instead of `instanceof BaseRRNode` keeps rrdom's node classes out of
+  // record-only bundles, where every node is a real DOM node.
+  if ('RRNodeType' in n && 'shadowRoot' in n) {
+    return Boolean((n as RRNode & { shadowRoot?: unknown }).shadowRoot);
   }
   return Boolean(dom.shadowRoot(n as unknown as Element));
 }

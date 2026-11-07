@@ -886,7 +886,7 @@ export class Replayer {
         if (plugin.handler) plugin.handler(event, isSync, { replayer: this });
       }
 
-      this.service.send({ type: 'CAST_EVENT', payload: { event } });
+      this.service.send({ type: 'CAST_EVENT', payload: { event, isSync } });
 
       // events are kept sorted by timestamp, check if this is the last event
       const lastIndex = this.service.state.context.events.length - 1;

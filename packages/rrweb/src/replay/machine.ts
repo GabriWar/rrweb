@@ -20,6 +20,14 @@ export type PlayerContext = {
   timeOffset: number;
   baselineTime: number;
   lastPlayedEvent: eventWithTime | null;
+  /**
+   * The last played event was applied synchronously (a seek), not by the
+   * timer. A seek applies every event whose raw timestamp is before the
+   * target, so a later forward seek must skip by that raw timestamp, not by
+   * a MouseMove's earlier first-position time (Panopticon RR-053: that
+   * re-applied e.g. a StyleSheetRule insert, so a CSS rule landed twice).
+   */
+  lastPlayedSync?: boolean;
 };
 export type PlayerEvent =
   | {
@@ -32,6 +40,7 @@ export type PlayerEvent =
       type: 'CAST_EVENT';
       payload: {
         event: eventWithTime;
+        isSync?: boolean;
       };
     }
   | { type: 'PAUSE' }
@@ -156,6 +165,12 @@ export function createPlayerService(
             }
             return ctx.lastPlayedEvent;
           },
+          lastPlayedSync: (ctx, event) => {
+            if (event.type === 'CAST_EVENT') {
+              return !!event.payload.isSync;
+            }
+            return ctx.lastPlayedSync;
+          },
         }),
         recordTimeOffset: assign((ctx, event) => {
           let timeOffset = ctx.timeOffset;
@@ -169,7 +184,8 @@ export function createPlayerService(
           };
         }),
         play(ctx) {
-          const { timer, events, baselineTime, lastPlayedEvent } = ctx;
+          const { timer, events, baselineTime, lastPlayedEvent, lastPlayedSync } =
+            ctx;
           timer.clear();
 
           for (const event of events) {
@@ -180,6 +196,7 @@ export function createPlayerService(
 
           let lastPlayedTimestamp = lastPlayedEvent?.timestamp;
           if (
+            !lastPlayedSync &&
             lastPlayedEvent?.type === EventType.IncrementalSnapshot &&
             lastPlayedEvent.data.source === IncrementalSource.MouseMove
           ) {
@@ -224,6 +241,7 @@ export function createPlayerService(
           return {
             ...ctx,
             lastPlayedEvent: null,
+            lastPlayedSync: false,
           };
         }),
         startLive: assign({

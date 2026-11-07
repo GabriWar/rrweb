@@ -78,6 +78,32 @@ describe('sliced full snapshot (RR-017)', () => {
     expect(json.match(/added while slicing/g)?.length ?? 0).toBeGreaterThanOrEqual(1);
   });
 
+  it('stop() mid-snapshot: no event of any kind afterwards and the walk reads no further node (privacy fix 3)', async () => {
+    page(3000);
+    document.body.insertAdjacentHTML('beforeend', '<iframe id="f"></iframe>');
+    const events: eventWithTime[] = [];
+    const stop = record({ emit: (e) => events.push(e as eventWithTime), snapshotSliceMs: 0.001 })!;
+    // let a few slices run, then stop while the walk is suspended
+    for (let i = 0; i < 3; i++) await new Promise((r) => setTimeout(r, 0));
+    const walked = record.mirror.getIds().length;
+    expect(walked).toBeGreaterThan(0);
+    expect(walked).toBeLessThan(3000);
+    stop();
+    const atStop = events.length;
+    // the page keeps changing and interacting after stop()
+    const li = document.createElement('li');
+    li.textContent = 'after stop';
+    document.getElementById('l')!.appendChild(li);
+    document.getElementById('b')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    document.getElementById('f')!.dispatchEvent(new Event('load'));
+    await settle(200);
+    expect(events.length).toBe(atStop);
+    expect(events.some((e) => e.type === EventType.FullSnapshot)).toBe(false);
+    // the walk ended at the yield it was suspended in
+    expect(record.mirror.getIds().length).toBe(walked);
+    expect(() => record.takeFullSnapshot()).toThrow();
+  });
+
   it('stop() during slicing emits no FullSnapshot', async () => {
     page(2000);
     const events: eventWithTime[] = [];

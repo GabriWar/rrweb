@@ -108,6 +108,8 @@ const mirror = createMirror();
 /** Sliced snapshot (RR-017): wall-time cap after which the rest runs at once. */
 const SLICE_MAX_WALL_MS = 5000;
 let activeSlicing: { cancelled: boolean } | null = null;
+/** Rejection that ends a sliced snapshot whose recording was stopped. */
+const SLICE_CANCELLED = new Error('rrweb: snapshot cancelled by stop()');
 
 /**
  * Give the page a turn: scheduler.yield() where available, else a
@@ -277,8 +279,13 @@ function record<T = eventWithTime>(
     queue: Array<[eventWithTime, boolean | undefined]>;
     cancelled: boolean;
   } | null = null;
+  // Panopticon: set by the stop function. Nothing this recording set up
+  // (observers, snapshot load hooks, a sliced snapshot still walking) may
+  // emit or serialize after stop().
+  let stopped = false;
 
   wrappedEmit = (r: eventWithoutTime, isCheckout?: boolean) => {
+    if (stopped) return;
     // Mutations buffered for this frame go out before anything recorded
     // after them (coalesceMutations); the flush re-enters with its own event.
     if (hasCoalescedMutations()) flushCoalescedMutations();
@@ -292,6 +299,7 @@ function record<T = eventWithTime>(
   };
 
   const dispatch = (e: eventWithTime, isCheckout?: boolean) => {
+    if (stopped) return;
     if (
       mutationBuffers[0]?.isFrozen() &&
       e.type !== EventType.FullSnapshot &&
@@ -343,8 +351,12 @@ function record<T = eventWithTime>(
   };
   _wrappedEmit = wrappedEmit;
 
+  // These emit through this recording's own closure: a later record() call
+  // replaces the module-level wrappedEmit, and a stale hook of this one
+  // must not leak into it.
+  const ownEmit = wrappedEmit;
   const wrappedMutationEmit = (m: mutationCallbackParam) => {
-    wrappedEmit({
+    ownEmit({
       type: EventType.IncrementalSnapshot,
       data: {
         source: IncrementalSource.Mutation,
@@ -353,7 +365,7 @@ function record<T = eventWithTime>(
     });
   };
   const wrappedScrollEmit: scrollCallback = (p) =>
-    wrappedEmit({
+    ownEmit({
       type: EventType.IncrementalSnapshot,
       data: {
         source: IncrementalSource.Scroll,
@@ -361,7 +373,7 @@ function record<T = eventWithTime>(
       },
     });
   const wrappedCanvasMutationEmit = (p: canvasMutationParam) =>
-    wrappedEmit({
+    ownEmit({
       type: EventType.IncrementalSnapshot,
       data: {
         source: IncrementalSource.CanvasMutation,
@@ -370,7 +382,7 @@ function record<T = eventWithTime>(
     });
 
   const wrappedAdoptedStyleSheetEmit = (a: adoptedStyleSheetParam) =>
-    wrappedEmit({
+    ownEmit({
       type: EventType.IncrementalSnapshot,
       data: {
         source: IncrementalSource.AdoptedStyleSheet,
@@ -555,6 +567,7 @@ function record<T = eventWithTime>(
     recordCanvas,
     inlineImages,
     onSerialize: (n: Node) => {
+      if (stopped) return;
       if (isSerializedIframe(n, mirror)) {
         iframeManager.addIframe(n as HTMLIFrameElement);
       }
@@ -570,6 +583,7 @@ function record<T = eventWithTime>(
       iframe: HTMLIFrameElement,
       childSn: serializedElementNodeWithId,
     ) => {
+      if (stopped) return;
       iframeManager.attachIframe(iframe, childSn);
       const contentWindow = getIFrameContentWindow(iframe);
       if (contentWindow) {
@@ -581,6 +595,7 @@ function record<T = eventWithTime>(
       linkEl: HTMLLinkElement,
       childSn: serializedElementNodeWithId,
     ) => {
+      if (stopped) return;
       stylesheetManager.attachLinkElement(linkEl, childSn);
     },
     onBlockedImageLoad: (
@@ -588,6 +603,7 @@ function record<T = eventWithTime>(
       serializedNode: serializedElementNodeWithId,
       { width, height }: DOMRect,
     ) => {
+      if (stopped) return;
       wrappedMutationEmit({
         adds: [],
         removes: [],
@@ -652,7 +668,9 @@ function record<T = eventWithTime>(
     };
     void snapshotSliced(document, snapshotOptions(), {
       // Starvation guard: past 5 s of wall time the rest runs in one go.
+      // A stopped recording ends the walk at the next node instead.
       shouldYield: () => {
+        if (state.cancelled) return true;
         const now = performance.now();
         return (
           now - sliceStart >= snapshotSliceMs && now - start < SLICE_MAX_WALL_MS
@@ -660,13 +678,16 @@ function record<T = eventWithTime>(
       },
       yieldSlice: () => {
         endSlice();
+        if (state.cancelled) return Promise.reject(SLICE_CANCELLED);
         return yieldToPage().then(() => {
+          // stop() ran while the page had its turn: not one more node
+          if (state.cancelled) throw SLICE_CANCELLED;
           sliceStart = performance.now();
         });
       },
     })
       .catch((err) => {
-        console.warn(err);
+        if (err !== SLICE_CANCELLED) console.warn(err);
         return null;
       })
       .then((node) => {
@@ -892,13 +913,16 @@ function record<T = eventWithTime>(
       );
     }
     return () => {
+      if (slicing) slicing.cancelled = true;
       if (activeSlicing) {
         // stopped mid-snapshot: nothing of it is emitted
         activeSlicing.cancelled = true;
         activeSlicing = null;
       }
+      // mutations of the current frame happened before stop(): they go out
       flushCoalescedMutations();
       setMutationCoalescing(false);
+      stopped = true;
       handlers.forEach((handler) => {
         try {
           handler();

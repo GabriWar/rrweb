@@ -280,8 +280,18 @@ export default class MutationBuffer {
   }
 
   public processMutations = (mutations: mutationRecord[]) => {
+    const benchStart =
+      typeof __PANO_BENCH__ !== 'undefined' && __PANO_BENCH__
+        ? performance.now()
+        : 0;
     mutations.forEach(this.processMutation); // adds mutations to the buffer
     this.emit(); // clears buffer if not locked/frozen
+    if (typeof __PANO_BENCH__ !== 'undefined' && __PANO_BENCH__) {
+      performance.measure('pano:rec:mutation', {
+        start: benchStart,
+        end: performance.now(),
+      });
+    }
   };
 
   public emit = () => {

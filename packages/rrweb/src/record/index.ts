@@ -60,6 +60,11 @@ export type { CanvasManagerConstructorOptions } from './observers/canvas/canvas-
 declare global {
   const __RRWEB_EXCLUDE_SHADOW_DOM__: boolean;
   const __RRWEB_EXCLUDE_IFRAME__: boolean;
+  /**
+   * Panopticon replay gate: compile `pano:rec:*` performance measures in.
+   * Production builds define it false, so the guarded code is dropped.
+   */
+  const __PANO_BENCH__: boolean;
 }
 
 let wrappedEmit!: (e: eventWithoutTime, isCheckout?: boolean) => void;
@@ -416,6 +421,10 @@ function record<T = eventWithTime>(
     shadowDomManager.init();
 
     mutationBuffers.forEach((buf) => buf.lock()); // don't allow any mirror modifications during snapshotting
+    const benchStart =
+      typeof __PANO_BENCH__ !== 'undefined' && __PANO_BENCH__
+        ? performance.now()
+        : 0;
     const node = snapshot(document, {
       mirror,
       blockClass,
@@ -479,6 +488,13 @@ function record<T = eventWithTime>(
       keepIframeSrcFn,
       ignoreCSSAttributes,
     });
+
+    if (typeof __PANO_BENCH__ !== 'undefined' && __PANO_BENCH__) {
+      performance.measure('pano:rec:snapshot', {
+        start: benchStart,
+        end: performance.now(),
+      });
+    }
 
     if (!node) {
       return console.warn('Failed to snapshot the document');

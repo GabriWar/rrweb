@@ -1,4 +1,5 @@
 import snapshot, {
+  snapshotSliced,
   serializeNodeWithId,
   transformAttribute,
   ignoreAttribute,
@@ -21,8 +22,11 @@ import rebuild, {
 export * from './types';
 export * from './utils';
 
+export type { SnapshotSlicer, SnapshotOptions } from './snapshot';
+
 export {
   snapshot,
+  snapshotSliced,
   serializeNodeWithId,
   rebuild,
   buildNodeWithSN,

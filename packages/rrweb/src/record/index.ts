@@ -1,5 +1,6 @@
 import {
   snapshot,
+  snapshotSliced,
   slimDOMDefaults,
   type MaskInputOptions,
   createMirror,
@@ -34,6 +35,7 @@ import {
   type canvasMutationParam,
   type adoptedStyleSheetParam,
   type IWindow,
+  type serializedElementNodeWithId,
 } from '@rrweb/types';
 import type { CrossOriginIframeMessageEventContent } from '../types';
 import {
@@ -102,6 +104,35 @@ try {
 }
 
 const mirror = createMirror();
+
+/** Sliced snapshot (RR-017): wall-time cap after which the rest runs at once. */
+const SLICE_MAX_WALL_MS = 5000;
+let activeSlicing: { cancelled: boolean } | null = null;
+
+/**
+ * Give the page a turn: scheduler.yield() where available, else a
+ * user-visible scheduler.postTask(), else a MessageChannel message. Never
+ * setTimeout (4 ms clamping) or requestIdleCallback (starves on busy pages).
+ */
+function yieldToPage(): Promise<void> {
+  const s = (
+    globalThis as unknown as {
+      scheduler?: {
+        yield?: () => Promise<void>;
+        postTask?: (cb: () => void, o: { priority: string }) => Promise<void>;
+      };
+    }
+  ).scheduler;
+  if (s && typeof s.yield === 'function') return s.yield();
+  if (s && typeof s.postTask === 'function')
+    return s.postTask(() => undefined, { priority: 'user-visible' });
+  return new Promise((resolve) => {
+    const ch = new MessageChannel();
+    ch.port1.onmessage = () => resolve();
+    ch.port2.postMessage(0);
+  });
+}
+
 function record<T = eventWithTime>(
   options: recordOptions<T> = {},
 ): listenerHandler | undefined {
@@ -147,6 +178,7 @@ function record<T = eventWithTime>(
     onMutation,
     getCanvasManager,
     coalesceMutations = false,
+    snapshotSliceMs = 0,
   } = options;
 
   registerErrorHandler(errorHandler);
@@ -239,12 +271,27 @@ function record<T = eventWithTime>(
     }
     return e as unknown as T;
   };
+  // Sliced full snapshot in progress (snapshotSliceMs): every event recorded
+  // meanwhile waits here, stamped, and goes out right after the FullSnapshot.
+  let slicing: {
+    queue: Array<[eventWithTime, boolean | undefined]>;
+    cancelled: boolean;
+  } | null = null;
+
   wrappedEmit = (r: eventWithoutTime, isCheckout?: boolean) => {
     // Mutations buffered for this frame go out before anything recorded
     // after them (coalesceMutations); the flush re-enters with its own event.
     if (hasCoalescedMutations()) flushCoalescedMutations();
     const e = r as eventWithTime;
     e.timestamp = nowTimestamp();
+    if (slicing) {
+      slicing.queue.push([e, isCheckout]);
+      return;
+    }
+    dispatch(e, isCheckout);
+  };
+
+  const dispatch = (e: eventWithTime, isCheckout?: boolean) => {
     if (
       mutationBuffers[0]?.isFrozen() &&
       e.type !== EventType.FullSnapshot &&
@@ -433,6 +480,10 @@ function record<T = eventWithTime>(
     if (!recordDOM) {
       return;
     }
+    if (snapshotSliceMs > 0) {
+      takeFullSnapshotSliced(isCheckout);
+      return;
+    }
     wrappedEmit(
       {
         type: EventType.Meta,
@@ -455,69 +506,7 @@ function record<T = eventWithTime>(
       typeof __PANO_BENCH__ !== 'undefined' && __PANO_BENCH__
         ? performance.now()
         : 0;
-    const node = snapshot(document, {
-      mirror,
-      blockClass,
-      blockSelector,
-      unblockSelector,
-      maskAllText,
-      maskTextClass,
-      unmaskTextClass,
-      maskTextSelector,
-      unmaskTextSelector,
-      inlineStylesheet,
-      maskAllInputs: maskInputOptions,
-      maskAttributeFn,
-      maskInputFn,
-      maskTextFn,
-      slimDOM: slimDOMOptions,
-      dataURLOptions,
-      recordCanvas,
-      inlineImages,
-      onSerialize: (n) => {
-        if (isSerializedIframe(n, mirror)) {
-          iframeManager.addIframe(n as HTMLIFrameElement);
-        }
-        if (isSerializedStylesheet(n, mirror)) {
-          stylesheetManager.trackLinkElement(n as HTMLLinkElement);
-        }
-        if (hasShadowRoot(n)) {
-          // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-          shadowDomManager.addShadowRoot(dom.shadowRoot(n as Node)!, document);
-        }
-      },
-      onIframeLoad: (iframe, childSn) => {
-        iframeManager.attachIframe(iframe, childSn);
-        const contentWindow = getIFrameContentWindow(iframe);
-        if (contentWindow) {
-          canvasManager.addWindow(contentWindow as IWindow);
-        }
-        shadowDomManager.observeAttachShadow(iframe);
-      },
-      onStylesheetLoad: (linkEl, childSn) => {
-        stylesheetManager.attachLinkElement(linkEl, childSn);
-      },
-      onBlockedImageLoad: (_imageEl, serializedNode, { width, height }) => {
-        wrappedMutationEmit({
-          adds: [],
-          removes: [],
-          texts: [],
-          attributes: [
-            {
-              id: serializedNode.id,
-              attributes: {
-                style: {
-                  width: `${width}px`,
-                  height: `${height}px`,
-                },
-              },
-            },
-          ],
-        });
-      },
-      keepIframeSrcFn,
-      ignoreCSSAttributes,
-    });
+    const node = snapshot(document, snapshotOptions());
 
     if (typeof __PANO_BENCH__ !== 'undefined' && __PANO_BENCH__) {
       performance.measure('pano:rec:snapshot', {
@@ -545,6 +534,172 @@ function record<T = eventWithTime>(
         document.adoptedStyleSheets,
         mirror.getId(document),
       );
+  };
+  const snapshotOptions = () => ({
+    mirror,
+    blockClass,
+    blockSelector,
+    unblockSelector,
+    maskAllText,
+    maskTextClass,
+    unmaskTextClass,
+    maskTextSelector,
+    unmaskTextSelector,
+    inlineStylesheet,
+    maskAllInputs: maskInputOptions,
+    maskAttributeFn,
+    maskInputFn,
+    maskTextFn,
+    slimDOM: slimDOMOptions,
+    dataURLOptions,
+    recordCanvas,
+    inlineImages,
+    onSerialize: (n: Node) => {
+      if (isSerializedIframe(n, mirror)) {
+        iframeManager.addIframe(n as HTMLIFrameElement);
+      }
+      if (isSerializedStylesheet(n, mirror)) {
+        stylesheetManager.trackLinkElement(n as HTMLLinkElement);
+      }
+      if (hasShadowRoot(n)) {
+        // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+        shadowDomManager.addShadowRoot(dom.shadowRoot(n as Node)!, document);
+      }
+    },
+    onIframeLoad: (
+      iframe: HTMLIFrameElement,
+      childSn: serializedElementNodeWithId,
+    ) => {
+      iframeManager.attachIframe(iframe, childSn);
+      const contentWindow = getIFrameContentWindow(iframe);
+      if (contentWindow) {
+        canvasManager.addWindow(contentWindow as IWindow);
+      }
+      shadowDomManager.observeAttachShadow(iframe);
+    },
+    onStylesheetLoad: (
+      linkEl: HTMLLinkElement,
+      childSn: serializedElementNodeWithId,
+    ) => {
+      stylesheetManager.attachLinkElement(linkEl, childSn);
+    },
+    onBlockedImageLoad: (
+      _imageEl: HTMLImageElement,
+      serializedNode: serializedElementNodeWithId,
+      { width, height }: DOMRect,
+    ) => {
+      wrappedMutationEmit({
+        adds: [],
+        removes: [],
+        texts: [],
+        attributes: [
+          {
+            id: serializedNode.id,
+            attributes: {
+              style: {
+                width: `${width}px`,
+                height: `${height}px`,
+              },
+            },
+          },
+        ],
+      });
+    },
+    keepIframeSrcFn,
+    ignoreCSSAttributes,
+  });
+
+  /**
+   * Panopticon RR-017: the full snapshot serialized in slices of at most
+   * snapshotSliceMs, yielding to the page in between, so a large DOM never
+   * blocks the main thread in one long task. Observers are already live and
+   * the mutation buffers locked, as for the synchronous snapshot; events
+   * recorded meanwhile are queued, so the stream is still Meta, FullSnapshot,
+   * the queued events in order, then the mutations buffered while slicing.
+   * The FullSnapshot carries the Meta's timestamp: the serialized DOM is the
+   * page as of the slices, and every queued event happened after that start.
+   */
+  const takeFullSnapshotSliced = (isCheckout: boolean, beforeLock?: () => void) => {
+    if (slicing) return; // a checkout asked for mid-slice: this one covers it
+    const meta = {
+      type: EventType.Meta,
+      data: {
+        href: window.location.href,
+        width: getWindowWidth(),
+        height: getWindowHeight(),
+      },
+      timestamp: nowTimestamp(),
+    } as eventWithTime;
+    dispatch(meta, isCheckout);
+    const state: NonNullable<typeof slicing> = { queue: [], cancelled: false };
+    slicing = state;
+    activeSlicing = state;
+
+    stylesheetManager.reset();
+    shadowDomManager.init();
+    beforeLock?.();
+    mutationBuffers.forEach((buf) => buf.lock());
+
+    const bench = typeof __PANO_BENCH__ !== 'undefined' && __PANO_BENCH__;
+    const start = performance.now();
+    let sliceStart = start;
+    const endSlice = () => {
+      if (bench)
+        performance.measure('pano:rec:snapshot', {
+          start: sliceStart,
+          end: performance.now(),
+        });
+    };
+    void snapshotSliced(document, snapshotOptions(), {
+      // Starvation guard: past 5 s of wall time the rest runs in one go.
+      shouldYield: () => {
+        const now = performance.now();
+        return (
+          now - sliceStart >= snapshotSliceMs && now - start < SLICE_MAX_WALL_MS
+        );
+      },
+      yieldSlice: () => {
+        endSlice();
+        return yieldToPage().then(() => {
+          sliceStart = performance.now();
+        });
+      },
+    })
+      .catch((err) => {
+        console.warn(err);
+        return null;
+      })
+      .then((node) => {
+        endSlice();
+        if (bench)
+          performance.measure('pano:rec:snapshot-wall', {
+            start,
+            end: performance.now(),
+          });
+        if (slicing === state) slicing = null;
+        if (activeSlicing === state) activeSlicing = null;
+        if (state.cancelled) return;
+        if (!node) {
+          console.warn('Failed to snapshot the document');
+        } else {
+          dispatch({
+            type: EventType.FullSnapshot,
+            data: { node, initialOffset: getWindowScroll(window) },
+            timestamp: meta.timestamp,
+          } as eventWithTime);
+        }
+        for (const [e, c] of state.queue) dispatch(e, c);
+        mutationBuffers.forEach((buf) => buf.unlock());
+        if (
+          node &&
+          document.adoptedStyleSheets &&
+          document.adoptedStyleSheets.length > 0
+        )
+          stylesheetManager.adoptStyleSheets(
+            document.adoptedStyleSheets,
+            mirror.getId(document),
+          );
+      });
   };
   _takeFullSnapshot = takeFullSnapshot;
 
@@ -702,6 +857,11 @@ function record<T = eventWithTime>(
     });
 
     const init = () => {
+      if (snapshotSliceMs > 0 && recordDOM) {
+        // sliced: the page runs during the snapshot, so observers go first
+        takeFullSnapshotSliced(false, () => handlers.push(observe(document)));
+        return;
+      }
       takeFullSnapshot();
       handlers.push(observe(document));
     };
@@ -732,6 +892,11 @@ function record<T = eventWithTime>(
       );
     }
     return () => {
+      if (activeSlicing) {
+        // stopped mid-snapshot: nothing of it is emitted
+        activeSlicing.cancelled = true;
+        activeSlicing = null;
+      }
       flushCoalescedMutations();
       setMutationCoalescing(false);
       handlers.forEach((handler) => {

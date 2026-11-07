@@ -90,6 +90,11 @@ export type recordOptions<T> = {
    * frame (Panopticon). Order relative to other events is preserved.
    */
   coalesceMutations?: boolean;
+  /**
+   * Serialize full snapshots in slices of at most this many ms, yielding to
+   * the page between them (Panopticon). 0 = one synchronous snapshot.
+   */
+  snapshotSliceMs?: number;
   onMutation?: (mutations: MutationRecord[]) => boolean;
   getCanvasManager?: (
     options: CanvasManagerConstructorOptions,

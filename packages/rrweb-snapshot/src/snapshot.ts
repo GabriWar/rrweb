@@ -1285,9 +1285,10 @@ function slimDOMExcluded(
   return false;
 }
 
-export function serializeNodeWithId(
-  n: Node,
-  options: {
+/**
+ * Options of serializeNodeWithId (and of the sliced walker, Panopticon RR-017).
+ */
+export type SerializeNodeOptions = {
     doc: Document;
     mirror: Mirror;
     blockClass: string | RegExp;
@@ -1329,8 +1330,27 @@ export function serializeNodeWithId(
     stylesheetLoadTimeout?: number;
     cssCaptured?: boolean;
     ignoreCSSAttributes?: Set<string>;
-  },
-): serializedNodeWithId | null {
+  };
+
+/**
+ * First half of serializeNodeWithId: serialize `n` itself, give it an id,
+ * run onSerialize, and work out the options its children are serialized
+ * with. Children are then visited by the caller (recursively for the
+ * synchronous snapshot, from an explicit stack for the sliced one), and
+ * serializeNodeTail() runs once they are done. Both halves are exactly the
+ * code serializeNodeWithId always ran, split at the child loop, so the two
+ * walkers produce byte-identical output.
+ */
+function serializeNodeHead(
+  n: Node,
+  options: SerializeNodeOptions,
+): {
+  serializedNode: serializedNodeWithId;
+  /** options for children; null when the node's children are not recorded */
+  childOptions: SerializeNodeOptions | null;
+  /** the light-DOM children are skipped (a textarea whose value is recorded) */
+  skipLightChildren: boolean;
+} | null {
   const {
     doc,
     mirror,
@@ -1477,41 +1497,68 @@ export function serializeNodeWithId(
       ignoreCSSAttributes,
     };
 
-    if (
+    const skipLightChildren =
       serializedNode.type === NodeType.Element &&
       serializedNode.tagName === 'textarea' &&
-      (serializedNode as elementNode).attributes.value !== undefined
+      (serializedNode as elementNode).attributes.value !== undefined;
+    // value parameter in DOM reflects the correct value, so ignore childNode
+    if (
+      !skipLightChildren &&
+      serializedNode.type === NodeType.Element &&
+      (serializedNode as elementNode).attributes._cssText !== undefined &&
+      typeof serializedNode.attributes._cssText === 'string'
     ) {
-      // value parameter in DOM reflects the correct value, so ignore childNode
-    } else {
-      if (
-        serializedNode.type === NodeType.Element &&
-        (serializedNode as elementNode).attributes._cssText !== undefined &&
-        typeof serializedNode.attributes._cssText === 'string'
-      ) {
-        bypassOptions.cssCaptured = true;
-      }
-      for (const childN of Array.from(dom.childNodes(n))) {
-        const serializedChildNode = serializeNodeWithId(childN, bypassOptions);
-        if (serializedChildNode) {
-          serializedNode.childNodes.push(serializedChildNode);
-        }
-      }
+      bypassOptions.cssCaptured = true;
     }
-
-    let shadowRootEl: ShadowRoot | null = null;
-    if (isElement(n) && (shadowRootEl = dom.shadowRoot(n))) {
-      for (const childN of Array.from(dom.childNodes(shadowRootEl))) {
-        const serializedChildNode = serializeNodeWithId(childN, bypassOptions);
-        if (serializedChildNode) {
-          isNativeShadowDom(shadowRootEl) &&
-            (serializedChildNode.isShadow = true);
-          serializedNode.childNodes.push(serializedChildNode);
-        }
-      }
-    }
+    return {
+      serializedNode,
+      childOptions: bypassOptions,
+      skipLightChildren,
+    };
   }
+  return { serializedNode, childOptions: null, skipLightChildren: false };
+}
 
+/**
+ * Second half of serializeNodeWithId: what runs after the node's children
+ * (shadow-child flag, iframe / blocked image / stylesheet load hooks).
+ */
+function serializeNodeTail(
+  n: Node,
+  serializedNode: serializedNodeWithId,
+  options: SerializeNodeOptions,
+): void {
+  const {
+    mirror,
+    blockClass,
+    blockSelector,
+    unblockSelector,
+    maskAllText,
+    maskTextClass,
+    unmaskTextClass,
+    maskTextSelector,
+    unmaskTextSelector,
+    inlineStylesheet = true,
+    maskInputOptions = {},
+    maskAttributeFn,
+    maskTextFn,
+    maskInputFn,
+    slimDOMOptions,
+    dataURLOptions = {},
+    inlineImages = false,
+    recordCanvas = false,
+    onSerialize,
+    onIframeLoad,
+    iframeLoadTimeout = 5000,
+    onBlockedImageLoad,
+    onStylesheetLoad,
+    stylesheetLoadTimeout = 5000,
+    keepIframeSrcFn = () => false,
+    ignoreCSSAttributes,
+    doc,
+  } = options;
+  // serializeNodeHead only turns this off for <head>, which has no hooks below
+  const { preserveWhiteSpace = true } = options;
   const parent = dom.parentNode(n);
   if (parent && isShadowRoot(parent) && isNativeShadowDom(parent)) {
     serializedNode.isShadow = true;
@@ -1661,12 +1708,58 @@ export function serializeNodeWithId(
     delete serializedNode.needBlock;
   }
 
+}
+
+/** Serialize the light-DOM and shadow children of a node (synchronous walk). */
+function serializeChildren(
+  n: Node,
+  serializedNode: serializedNodeWithId,
+  childOptions: SerializeNodeOptions,
+  skipLightChildren: boolean,
+) {
+  if (
+    serializedNode.type !== NodeType.Document &&
+    serializedNode.type !== NodeType.Element
+  )
+    return;
+  if (!skipLightChildren) {
+    for (const childN of Array.from(dom.childNodes(n))) {
+      const serializedChildNode = serializeNodeWithId(childN, childOptions);
+      if (serializedChildNode) {
+        serializedNode.childNodes.push(serializedChildNode);
+      }
+    }
+  }
+
+  let shadowRootEl: ShadowRoot | null = null;
+  if (isElement(n) && (shadowRootEl = dom.shadowRoot(n))) {
+    for (const childN of Array.from(dom.childNodes(shadowRootEl))) {
+      const serializedChildNode = serializeNodeWithId(childN, childOptions);
+      if (serializedChildNode) {
+        isNativeShadowDom(shadowRootEl) &&
+          (serializedChildNode.isShadow = true);
+        serializedNode.childNodes.push(serializedChildNode);
+      }
+    }
+  }
+}
+
+export function serializeNodeWithId(
+  n: Node,
+  options: SerializeNodeOptions,
+): serializedNodeWithId | null {
+  const head = serializeNodeHead(n, options);
+  if (!head) return null;
+  const { serializedNode, childOptions, skipLightChildren } = head;
+  if (childOptions) {
+    serializeChildren(n, serializedNode, childOptions, skipLightChildren);
+  }
+  serializeNodeTail(n, serializedNode, options);
   return serializedNode;
 }
 
-function snapshot(
-  n: Document,
-  options?: {
+/** snapshot()'s options. */
+export type SnapshotOptions = {
     mirror?: Mirror;
     blockClass?: string | RegExp;
     blockSelector?: string | null;
@@ -1704,8 +1797,13 @@ function snapshot(
     stylesheetLoadTimeout?: number;
     keepIframeSrcFn?: KeepIframeSrcFn;
     ignoreCSSAttributes?: Set<string>;
-  },
-): serializedNodeWithId | null {
+  };
+
+/** Normalize snapshot() options into what serializeNodeWithId takes. */
+function snapshotSerializeOptions(
+  n: Document,
+  options?: SnapshotOptions,
+): SerializeNodeOptions {
   const {
     mirror = new Mirror(),
     blockClass = 'rr-block',
@@ -1759,7 +1857,7 @@ function snapshot(
       : maskAllInputs;
   const slimDOMOptions = slimDOMDefaults(slimDOM);
 
-  return serializeNodeWithId(n, {
+  return {
     doc: n,
     mirror,
     blockClass,
@@ -1790,7 +1888,130 @@ function snapshot(
     keepIframeSrcFn,
     newlyAddedElement: false,
     ignoreCSSAttributes,
-  });
+  };
+}
+
+function snapshot(
+  n: Document,
+  options?: SnapshotOptions,
+): serializedNodeWithId | null {
+  return serializeNodeWithId(n, snapshotSerializeOptions(n, options));
+}
+
+/**
+ * Cooperative scheduling for snapshotSliced() (Panopticon RR-017): the
+ * recorder decides when a slice has used its budget and how to resume.
+ */
+export interface SnapshotSlicer {
+  /** true when the current slice should end before the next node */
+  shouldYield(): boolean;
+  /** resolves when the next slice may start */
+  yieldSlice(): Promise<void>;
+}
+
+/**
+ * snapshot(), serialized in slices: an explicit-stack walk that visits nodes
+ * in exactly serializeNodeWithId's order (children, then the shadow root,
+ * then the node's load hooks) and may pause between any two nodes. Each
+ * node is serialized atomically (a stylesheet's text included), so a page
+ * that does not change while slicing gets byte-identical output.
+ *
+ * The page can run between slices. The recorder keeps rrweb's mutation
+ * buffers locked meanwhile, so every change is still recorded; here a node
+ * that left its parent since the parent's children were listed is skipped
+ * (a move re-adds it through the buffer), and a node is never serialized
+ * twice.
+ */
+export async function snapshotSliced(
+  n: Document,
+  options: SnapshotOptions | undefined,
+  slicer: SnapshotSlicer,
+): Promise<serializedNodeWithId | null> {
+  const rootOptions = snapshotSerializeOptions(n, options);
+  const root = serializeNodeHead(n, rootOptions);
+  if (!root) return null;
+  const seen = new WeakSet<Node>([n]);
+  type Frame = {
+    n: Node;
+    sn: serializedNodeWithId;
+    options: SerializeNodeOptions;
+    childOptions: SerializeNodeOptions;
+    queue: Node[];
+    i: number;
+    parent: Node;
+    shadowStarted: boolean;
+    markShadow: boolean;
+  };
+  const stack: Frame[] = [];
+  const finish = (
+    node: Node,
+    sn: serializedNodeWithId,
+    opts: SerializeNodeOptions,
+    markShadow: boolean,
+  ) => {
+    serializeNodeTail(node, sn, opts);
+    if (markShadow) sn.isShadow = true;
+  };
+  const open = (
+    node: Node,
+    head: NonNullable<ReturnType<typeof serializeNodeHead>>,
+    opts: SerializeNodeOptions,
+    markShadow: boolean,
+  ) => {
+    if (
+      !head.childOptions ||
+      (head.serializedNode.type !== NodeType.Document &&
+        head.serializedNode.type !== NodeType.Element)
+    ) {
+      finish(node, head.serializedNode, opts, markShadow);
+      return;
+    }
+    stack.push({
+      n: node,
+      sn: head.serializedNode,
+      options: opts,
+      childOptions: head.childOptions,
+      queue: head.skipLightChildren ? [] : Array.from(dom.childNodes(node)),
+      i: 0,
+      parent: node,
+      shadowStarted: false,
+      markShadow,
+    });
+  };
+  open(n, root, rootOptions, false);
+  while (stack.length) {
+    const f = stack[stack.length - 1];
+    if (f.i < f.queue.length) {
+      const child = f.queue[f.i++];
+      // listed when the parent was visited; the page may have moved it since
+      if (seen.has(child) || dom.parentNode(child) !== f.parent) continue;
+      seen.add(child);
+      const head = serializeNodeHead(child, f.childOptions);
+      if (head) {
+        (f.sn as { childNodes: serializedNodeWithId[] }).childNodes.push(
+          head.serializedNode,
+        );
+        const shadowChild =
+          f.parent !== f.n && isNativeShadowDom(f.parent as ShadowRoot);
+        open(child, head, f.childOptions, shadowChild);
+      }
+      if (slicer.shouldYield()) await slicer.yieldSlice();
+      continue;
+    }
+    if (!f.shadowStarted) {
+      f.shadowStarted = true;
+      let shadowRootEl: ShadowRoot | null = null;
+      if (isElement(f.n) && (shadowRootEl = dom.shadowRoot(f.n))) {
+        f.queue = Array.from(dom.childNodes(shadowRootEl));
+        f.i = 0;
+        f.parent = shadowRootEl;
+        continue;
+      }
+    }
+    stack.pop();
+    finish(f.n, f.sn, f.options, f.markShadow);
+  }
+  return root.serializedNode;
 }
 
 export function visitSnapshot(

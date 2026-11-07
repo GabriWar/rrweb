@@ -458,6 +458,10 @@ export class Replayer {
     if (firstMeta) {
       const { width, height } = firstMeta.data as metaEvent['data'];
       setTimeout(() => {
+        // Panopticon RR-052: a seek right after construction has already
+        // applied the Meta and any later ViewportResize; sizing the poster
+        // to the first Meta now would undo them.
+        if (this.firstFullSnapshot) return;
         this.emitter.emit(ReplayerEvents.Resize, {
           width,
           height,

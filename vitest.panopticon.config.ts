@@ -38,6 +38,7 @@ export default defineConfig({
       'packages/rrweb-snapshot/test/asset-hook.test.ts',
       'packages/rrweb/test/record/asset-hook.test.ts',
       'packages/rrweb/test/replay/seek-forward.test.ts',
+      'packages/rrweb/test/replay/poster-resize.test.ts',
     ],
   },
 });

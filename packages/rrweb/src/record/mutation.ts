@@ -34,6 +34,9 @@ import {
   inDom,
   getShadowHost,
   closestElementOfNode,
+  onRequestAnimationFrame,
+  setTimeout,
+  clearTimeout,
 } from '../utils';
 import dom from '@rrweb/utils';
 import { StyleDeclarationParser } from './style-declaration-parser';
@@ -142,6 +145,70 @@ class DoubleLinkedList {
 }
 
 const moveKey = (id: number, parentId: number) => `${id}@${parentId}`;
+
+/**
+ * Per-frame mutation coalescing (Panopticon RR-016). When enabled by
+ * record({ coalesceMutations: true }), a MutationObserver callback only
+ * buffers its records; every buffer with pending records is emitted once,
+ * on the next animation frame (or after COALESCE_FALLBACK_MS when no frame
+ * comes, e.g. a hidden tab), as one mutation event. The recorder flushes
+ * synchronously before emitting any other event, before a full snapshot and
+ * on stop, so the stream order is the same as without coalescing.
+ */
+const COALESCE_FALLBACK_MS = 100;
+let coalesceMutations = false;
+const pendingBuffers = new Set<MutationBuffer>();
+let flushScheduled = false;
+let flushing = false;
+let fallbackTimer: ReturnType<typeof setTimeout> | null = null;
+
+export function setMutationCoalescing(enabled: boolean) {
+  coalesceMutations = enabled;
+  if (!enabled) flushCoalescedMutations();
+}
+
+export function hasCoalescedMutations(): boolean {
+  return pendingBuffers.size > 0 && !flushing;
+}
+
+/** Emit every buffered frame's mutations now (no-op when nothing is pending). */
+export function flushCoalescedMutations() {
+  flushScheduled = false;
+  if (fallbackTimer !== null) {
+    clearTimeout(fallbackTimer);
+    fallbackTimer = null;
+  }
+  if (!pendingBuffers.size || flushing) return;
+  flushing = true;
+  const benchStart =
+    typeof __PANO_BENCH__ !== 'undefined' && __PANO_BENCH__
+      ? performance.now()
+      : 0;
+  try {
+    const buffers = Array.from(pendingBuffers);
+    pendingBuffers.clear();
+    buffers.forEach((buf) => buf.emit());
+  } finally {
+    flushing = false;
+  }
+  if (typeof __PANO_BENCH__ !== 'undefined' && __PANO_BENCH__) {
+    performance.measure('pano:rec:mutation', {
+      start: benchStart,
+      end: performance.now(),
+    });
+  }
+}
+
+function scheduleCoalescedFlush() {
+  if (flushScheduled) return;
+  flushScheduled = true;
+  const hidden =
+    typeof document !== 'undefined' && document.visibilityState === 'hidden';
+  // rAF does not run in hidden tabs; the timer also covers a tab that is
+  // hidden after this frame was requested.
+  if (!hidden) onRequestAnimationFrame(flushCoalescedMutations);
+  fallbackTimer = setTimeout(flushCoalescedMutations, COALESCE_FALLBACK_MS);
+}
 
 /**
  * controls behaviour of a MutationObserver
@@ -285,7 +352,12 @@ export default class MutationBuffer {
         ? performance.now()
         : 0;
     mutations.forEach(this.processMutation); // adds mutations to the buffer
-    this.emit(); // clears buffer if not locked/frozen
+    if (coalesceMutations && !this.locked && !this.frozen) {
+      pendingBuffers.add(this);
+      scheduleCoalescedFlush();
+    } else {
+      this.emit(); // clears buffer if not locked/frozen
+    }
     if (typeof __PANO_BENCH__ !== 'undefined' && __PANO_BENCH__) {
       performance.measure('pano:rec:mutation', {
         start: benchStart,

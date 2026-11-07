@@ -85,6 +85,11 @@ export type recordOptions<T> = {
   mousemoveWait?: number;
   keepIframeSrcFn?: KeepIframeSrcFn;
   errorHandler?: ErrorHandler;
+  /**
+   * Coalesce MutationObserver callbacks into one mutation event per animation
+   * frame (Panopticon). Order relative to other events is preserved.
+   */
+  coalesceMutations?: boolean;
   onMutation?: (mutations: MutationRecord[]) => boolean;
   getCanvasManager?: (
     options: CanvasManagerConstructorOptions,

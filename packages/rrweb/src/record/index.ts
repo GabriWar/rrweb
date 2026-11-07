@@ -7,6 +7,11 @@ import {
 import { getIFrameContentWindow } from 'rrdom';
 import { initObservers, mutationBuffers } from './observer';
 import {
+  flushCoalescedMutations,
+  hasCoalescedMutations,
+  setMutationCoalescing,
+} from './mutation';
+import {
   on,
   getWindowWidth,
   getWindowHeight,
@@ -141,6 +146,7 @@ function record<T = eventWithTime>(
     errorHandler,
     onMutation,
     getCanvasManager,
+    coalesceMutations = false,
   } = options;
 
   registerErrorHandler(errorHandler);
@@ -213,6 +219,8 @@ function record<T = eventWithTime>(
 
   polyfill();
 
+  setMutationCoalescing(coalesceMutations);
+
   let lastFullSnapshotEvent: eventWithTime;
   let incrementalSnapshotCount = 0;
 
@@ -232,6 +240,9 @@ function record<T = eventWithTime>(
     return e as unknown as T;
   };
   wrappedEmit = (r: eventWithoutTime, isCheckout?: boolean) => {
+    // Mutations buffered for this frame go out before anything recorded
+    // after them (coalesceMutations); the flush re-enters with its own event.
+    if (hasCoalescedMutations()) flushCoalescedMutations();
     const e = r as eventWithTime;
     e.timestamp = nowTimestamp();
     if (
@@ -721,6 +732,8 @@ function record<T = eventWithTime>(
       );
     }
     return () => {
+      flushCoalescedMutations();
+      setMutationCoalescing(false);
       handlers.forEach((handler) => {
         try {
           handler();
@@ -761,6 +774,14 @@ export function addCustomEvent<T>(tag: string, payload: T) {
       payload,
     },
   });
+}
+
+/**
+ * Emit the mutations buffered for the current frame now (coalesceMutations).
+ * Call before shipping events on page hide/unload.
+ */
+export function flushMutations() {
+  flushCoalescedMutations();
 }
 
 export function freezePage() {

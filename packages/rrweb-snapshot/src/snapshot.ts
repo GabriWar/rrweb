@@ -429,6 +429,32 @@ export function createMatchPredicate(
   };
 }
 
+let maskSelectorFor: [string | RegExp, string | null, string | null] | null =
+  null;
+/**
+ * The CSS selector equivalent of a mask class + mask selector, '' when there
+ * is nothing to mask, null when the class is a RegExp (no selector form).
+ */
+function maskTargetSelector(
+  maskTextClass: string | RegExp,
+  maskTextSelector: string | null,
+): string | null {
+  if (
+    maskSelectorFor &&
+    maskSelectorFor[0] === maskTextClass &&
+    maskSelectorFor[1] === maskTextSelector
+  )
+    return maskSelectorFor[2];
+  let sel: string | null;
+  if (maskTextClass && typeof maskTextClass !== 'string') sel = null;
+  else
+    sel = [maskTextClass ? `.${maskTextClass}` : '', maskTextSelector || '']
+      .filter(Boolean)
+      .join(',');
+  maskSelectorFor = [maskTextClass, maskTextSelector, sel];
+  return sel;
+}
+
 export function needMaskingText(
   node: Node,
   maskTextClass: string | RegExp,
@@ -489,6 +515,14 @@ export function needMaskingText(
         unmaskDistance >= 0 ? unmaskDistance : Infinity,
       );
     } else {
+      // Fast path (Panopticon RR-018): one native closest() answers "is any
+      // element from here up a mask target", which is what the walk below
+      // finds out with two matches() per ancestor for every text node.
+      const maskSelector = maskTargetSelector(maskTextClass, maskTextSelector);
+      if (maskSelector === '' || (maskSelector && !el.closest(maskSelector))) {
+        return false;
+      }
+
       maskDistance = distanceToMatch(
         el,
         createMatchPredicate(maskTextClass, maskTextSelector),

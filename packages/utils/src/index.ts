@@ -111,9 +111,13 @@ export function getUntaintedPrototype<T extends keyof BasePrototypeCache>(
   }
 }
 
+// Keyed by prototype name, then accessor: this runs for every node the
+// recorder touches (childNodes, parentNode, ...), and building a
+// `${key}.${accessor}` string per call was the recorder's top self-time on a
+// 6,000-element table rewrite (Panopticon RR-018).
 const untaintedAccessorCache: Record<
   string,
-  (this: PrototypeOwner, ...args: unknown[]) => unknown
+  Record<PropertyKey, (this: PrototypeOwner, ...args: unknown[]) => unknown>
 > = {};
 
 export function getUntaintedAccessor<
@@ -124,11 +128,8 @@ export function getUntaintedAccessor<
   instance: BasePrototypeCache[K],
   accessor: T,
 ): BasePrototypeCache[K][T] {
-  const cacheKey = `${key}.${String(accessor)}`;
-  if (untaintedAccessorCache[cacheKey])
-    return untaintedAccessorCache[cacheKey].call(
-      instance,
-    ) as BasePrototypeCache[K][T];
+  const cached = untaintedAccessorCache[key]?.[accessor as PropertyKey];
+  if (cached) return cached.call(instance) as BasePrototypeCache[K][T];
 
   const untaintedPrototype = getUntaintedPrototype(key);
   // eslint-disable-next-line @typescript-eslint/unbound-method
@@ -139,7 +140,8 @@ export function getUntaintedAccessor<
 
   if (!untaintedAccessor) return instance[accessor];
 
-  untaintedAccessorCache[cacheKey] = untaintedAccessor;
+  (untaintedAccessorCache[key] ||= {})[accessor as PropertyKey] =
+    untaintedAccessor;
 
   return untaintedAccessor.call(instance) as BasePrototypeCache[K][T];
 }
@@ -150,7 +152,8 @@ type BaseMethod<K extends keyof BasePrototypeCache> = (
 ) => unknown;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const untaintedMethodCache: Record<string, BaseMethod<any>> = {};
+const untaintedMethodCache: Record<string, Record<PropertyKey, BaseMethod<any>>> =
+  {};
 export function getUntaintedMethod<
   K extends keyof BasePrototypeCache,
   T extends keyof BasePrototypeCache[K],
@@ -159,18 +162,16 @@ export function getUntaintedMethod<
   instance: BasePrototypeCache[K],
   method: T,
 ): BasePrototypeCache[K][T] {
-  const cacheKey = `${key}.${String(method)}`;
-  if (untaintedMethodCache[cacheKey])
-    return untaintedMethodCache[cacheKey].bind(
-      instance,
-    ) as BasePrototypeCache[K][T];
+  const cached = untaintedMethodCache[key]?.[method as PropertyKey];
+  if (cached) return cached.bind(instance) as BasePrototypeCache[K][T];
 
   const untaintedPrototype = getUntaintedPrototype(key);
   const untaintedMethod = untaintedPrototype[method];
 
   if (typeof untaintedMethod !== 'function') return instance[method];
 
-  untaintedMethodCache[cacheKey] = untaintedMethod as BaseMethod<K>;
+  (untaintedMethodCache[key] ||= {})[method as PropertyKey] =
+    untaintedMethod as BaseMethod<K>;
 
   return untaintedMethod.bind(instance) as BasePrototypeCache[K][T];
 }

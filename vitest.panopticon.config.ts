@@ -35,6 +35,8 @@ export default defineConfig({
       'packages/rrweb/test/record/sliced-snapshot.test.ts',
       'packages/rrweb-snapshot/test/snapshot-sliced.test.ts',
       'packages/rrweb-snapshot/test/mask-fast-path.test.ts',
+      'packages/rrweb-snapshot/test/asset-hook.test.ts',
+      'packages/rrweb/test/record/asset-hook.test.ts',
     ],
   },
 });

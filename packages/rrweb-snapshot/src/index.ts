@@ -13,6 +13,7 @@ import snapshot, {
   IGNORED_NODE,
   genId,
   filterCSSPropertiesFromInlineStyle,
+  setAssetHook,
 } from './snapshot';
 import rebuild, {
   buildNodeWithSN,
@@ -44,4 +45,5 @@ export {
   IGNORED_NODE,
   genId,
   filterCSSPropertiesFromInlineStyle,
+  setAssetHook,
 };

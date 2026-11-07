@@ -1,4 +1,5 @@
 import type {
+  AssetHook,
   Mirror,
   MaskInputOptions,
   SlimDOMOptions,
@@ -95,6 +96,13 @@ export type recordOptions<T> = {
    * the page between them (Panopticon). 0 = one synchronous snapshot.
    */
   snapshotSliceMs?: number;
+  /**
+   * Panopticon RR-030: called with every large `_cssText` / `rr_dataURL` /
+   * `data:` attribute value this recording serializes; a string return
+   * replaces the value (the recorder's reference marker). Absent: output is
+   * byte-identical to rrweb without it.
+   */
+  assetHook?: AssetHook;
   onMutation?: (mutations: MutationRecord[]) => boolean;
   getCanvasManager?: (
     options: CanvasManagerConstructorOptions,

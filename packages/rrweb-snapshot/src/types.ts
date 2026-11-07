@@ -104,6 +104,14 @@ export type MaskAttributeFn = (
 
 export type KeepIframeSrcFn = (src: string) => boolean;
 
+/**
+ * Panopticon RR-030: called for every large value a serialized element
+ * carries: `_cssText` (kind css), `rr_dataURL` and any attribute value
+ * starting with `data:` (kind media). A string return replaces the value in
+ * the serialized node (the recorder's reference marker); null keeps it.
+ */
+export type AssetHook = (kind: 'css' | 'media', value: string) => string | null;
+
 export type BuildCache = {
   stylesWithHoverClass: Map<string, string>;
 };

@@ -1,4 +1,5 @@
 import type {
+  AssetHook,
   MaskInputOptions,
   SlimDOMOptions,
   MaskTextFn,
@@ -656,6 +657,36 @@ function onceStylesheetLoaded(
   });
 }
 
+let assetHook: AssetHook | null = null;
+/**
+ * Panopticon RR-030: install the asset hook for every serialization that
+ * follows (snapshot, sliced snapshot, mutation adds, iframe and stylesheet
+ * loads, shadow roots), until it is set again. record() sets it from its
+ * options at start and clears it at stop. Returns the previous hook.
+ */
+export function setAssetHook(hook: AssetHook | null): AssetHook | null {
+  const prev = assetHook;
+  assetHook = hook;
+  return prev;
+}
+
+/** Hand the element's large values to the asset hook (RR-030). */
+function applyAssetHook(attributes: attributes, hook: AssetHook) {
+  for (const name in attributes) {
+    const v = attributes[name];
+    if (typeof v !== 'string') continue;
+    const kind =
+      name === '_cssText'
+        ? 'css'
+        : name === 'rr_dataURL' || v.startsWith('data:')
+        ? 'media'
+        : null;
+    if (!kind) continue;
+    const r = hook(kind, v);
+    if (r !== null) attributes[name] = r;
+  }
+}
+
 function serializeNode(
   n: Node,
   options: {
@@ -1201,6 +1232,8 @@ function serializeElementNode(
   } catch (e) {
     // In case old browsers don't support customElements
   }
+
+  if (assetHook) applyAssetHook(attributes, assetHook);
 
   return {
     type: NodeType.Element,
@@ -1853,6 +1886,8 @@ export type SnapshotOptions = {
     stylesheetLoadTimeout?: number;
     keepIframeSrcFn?: KeepIframeSrcFn;
     ignoreCSSAttributes?: Set<string>;
+    /** RR-030, for this call only (record() uses setAssetHook instead). */
+    assetHook?: AssetHook;
   };
 
 /** Normalize snapshot() options into what serializeNodeWithId takes. */
@@ -1951,7 +1986,14 @@ function snapshot(
   n: Document,
   options?: SnapshotOptions,
 ): serializedNodeWithId | null {
-  return serializeNodeWithId(n, snapshotSerializeOptions(n, options));
+  if (!options?.assetHook)
+    return serializeNodeWithId(n, snapshotSerializeOptions(n, options));
+  const prev = setAssetHook(options.assetHook);
+  try {
+    return serializeNodeWithId(n, snapshotSerializeOptions(n, options));
+  } finally {
+    setAssetHook(prev);
+  }
 }
 
 /**

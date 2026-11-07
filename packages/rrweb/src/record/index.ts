@@ -1,6 +1,7 @@
 import {
   snapshot,
   snapshotSliced,
+  setAssetHook,
   slimDOMDefaults,
   type MaskInputOptions,
   createMirror,
@@ -181,9 +182,12 @@ function record<T = eventWithTime>(
     getCanvasManager,
     coalesceMutations = false,
     snapshotSliceMs = 0,
+    assetHook,
   } = options;
 
   registerErrorHandler(errorHandler);
+  // RR-030: every serialization of this recording goes through the hook
+  setAssetHook(assetHook || null);
 
   const excludeCrossOriginIframes =
     typeof __RRWEB_EXCLUDE_CROSS_ORIGIN_IFRAME__ === 'boolean' &&
@@ -923,6 +927,7 @@ function record<T = eventWithTime>(
       flushCoalescedMutations();
       setMutationCoalescing(false);
       stopped = true;
+      setAssetHook(null);
       handlers.forEach((handler) => {
         try {
           handler();

@@ -6,7 +6,8 @@
  */
 import { JSDOM } from 'jsdom';
 import { describe, expect, it } from 'vitest';
-import { createMatchPredicate, distanceToMatch, needMaskingText } from '../src/snapshot';
+import snapshot, { createMatchPredicate, distanceToMatch, needMaskingText } from '../src/snapshot';
+import { Mirror } from '../src/utils';
 
 /** needMaskingText as it was before the fast path (upstream logic). */
 function reference(
@@ -64,5 +65,32 @@ describe('needMaskingText closest() fast path (RR-018)', () => {
         );
       }
     }
+  });
+
+  // privacy fix 4: one invalid user selector must not turn the mask class off
+  it.each([
+    ['rr-mask', '[data-private', null, null],
+    ['rr-mask', 'div:::bad', 'rr-unmask', null],
+    ['rr-mask', '[data-private]', 'rr-unmask', '.other[[['],
+  ] as Array<[string, string, string | null, string | null]>)(
+    'invalid selector %s / %s: masks exactly what the upstream walk masks (privacy fix 4)',
+    (mc, ms, uc, us) => {
+      let masked = 0;
+      for (const maskAll of [false, true]) {
+        for (const n of nodes) {
+          const want = reference(n, mc, ms, uc, us, maskAll);
+          if (want) masked++;
+          expect(needMaskingText(n, mc, ms, uc, us, maskAll), `${n.nodeName} ${n.textContent?.slice(0, 20)}`).toBe(want);
+        }
+      }
+      expect(masked).toBeGreaterThan(0);
+    },
+  );
+
+  it('text in a .rr-mask region stays masked in a snapshot when maskTextSelector is invalid (privacy fix 4)', () => {
+    const d = new JSDOM('<!doctype html><body><p class="rr-mask">card 4242</p><p>public</p></body>').window.document;
+    const json = JSON.stringify(snapshot(d, { maskTextClass: 'rr-mask', maskTextSelector: 'p:::bad', mirror: new Mirror() }));
+    expect(json).not.toContain('4242');
+    expect(json).toContain('public');
   });
 });

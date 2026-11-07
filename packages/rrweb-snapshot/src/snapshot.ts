@@ -431,9 +431,22 @@ export function createMatchPredicate(
 
 let maskSelectorFor: [string | RegExp, string | null, string | null] | null =
   null;
+/** true when `selector` parses; never throws. */
+function isValidSelector(selector: string): boolean {
+  try {
+    document.createDocumentFragment().querySelector(selector);
+    return true;
+  } catch {
+    return false;
+  }
+}
 /**
  * The CSS selector equivalent of a mask class + mask selector, '' when there
- * is nothing to mask, null when the class is a RegExp (no selector form).
+ * is nothing to mask, null when there is no safe selector form: the class
+ * is a RegExp, or the class or the selector does not parse. null sends
+ * needMaskingText to the ancestor walk, which evaluates the class and the
+ * selector separately (an invalid selector there only loses its own
+ * matches, never the class's), so the fast path can never mask less.
  */
 function maskTargetSelector(
   maskTextClass: string | RegExp,
@@ -445,12 +458,14 @@ function maskTargetSelector(
     maskSelectorFor[1] === maskTextSelector
   )
     return maskSelectorFor[2];
-  let sel: string | null;
-  if (maskTextClass && typeof maskTextClass !== 'string') sel = null;
-  else
-    sel = [maskTextClass ? `.${maskTextClass}` : '', maskTextSelector || '']
-      .filter(Boolean)
-      .join(',');
+  let sel: string | null = null;
+  if (!maskTextClass || typeof maskTextClass === 'string') {
+    const parts = [
+      maskTextClass ? `.${maskTextClass}` : '',
+      maskTextSelector || '',
+    ].filter(Boolean);
+    sel = parts.every(isValidSelector) ? parts.join(',') : null;
+  }
   maskSelectorFor = [maskTextClass, maskTextSelector, sel];
   return sel;
 }
@@ -519,8 +534,15 @@ export function needMaskingText(
       // element from here up a mask target", which is what the walk below
       // finds out with two matches() per ancestor for every text node.
       const maskSelector = maskTargetSelector(maskTextClass, maskTextSelector);
-      if (maskSelector === '' || (maskSelector && !el.closest(maskSelector))) {
-        return false;
+      if (maskSelector === '') return false;
+      if (maskSelector) {
+        let inside = true; // a failed check never answers "not masked"
+        try {
+          inside = !!el.closest(maskSelector);
+        } catch {
+          // fall through to the walk
+        }
+        if (!inside) return false;
       }
 
       maskDistance = distanceToMatch(

@@ -32,6 +32,11 @@ async function recordOnce(snapshotSliceMs: number, during?: () => void) {
     snapshotSliceMs,
   })!;
   during?.();
+  // slices hop through MessageChannel; wait for the FullSnapshot, not a fixed time
+  const deadline = Date.now() + 10_000;
+  while (!events.some((e) => e.type === EventType.FullSnapshot) && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 10));
+  }
   await settle();
   stop();
   return events;

@@ -45,6 +45,83 @@ export class IframeManagerNoop implements IframeManagerInterface {
   }
 }
 
+/**
+ * Same-origin iframes only (Panopticon, __RRWEB_EXCLUDE_CROSS_ORIGIN_IFRAME__):
+ * no `message` listener, no cross-origin event transform and no
+ * CrossOriginIframeMirror. Same-origin iframe recording (attach, nested
+ * observers, adopted stylesheets) is identical to IframeManager's.
+ */
+export class SameOriginIframeManager implements IframeManagerInterface {
+  // Only cross-origin iframes populate these; plugins may still read them.
+  public crossOriginIframeMirror = noCrossOriginMirror;
+  public crossOriginIframeStyleMirror = noCrossOriginMirror;
+  public crossOriginIframeRootIdMap: WeakMap<HTMLIFrameElement, number> =
+    new WeakMap();
+  private mirror: Mirror;
+  private mutationCb: mutationCallBack;
+  private loadListener?: (iframeEl: HTMLIFrameElement) => unknown;
+  private stylesheetManager: StylesheetManager;
+
+  constructor(options: {
+    mirror: Mirror;
+    mutationCb: mutationCallBack;
+    stylesheetManager: StylesheetManager;
+  }) {
+    this.mirror = options.mirror;
+    this.mutationCb = options.mutationCb;
+    this.stylesheetManager = options.stylesheetManager;
+  }
+
+  public addIframe() {
+    // nothing to map: no cross-origin messages are accepted
+  }
+
+  public addLoadListener(cb: (iframeEl: HTMLIFrameElement) => unknown) {
+    this.loadListener = cb;
+  }
+
+  public attachIframe(
+    iframeEl: HTMLIFrameElement,
+    childSn: serializedNodeWithId,
+  ) {
+    this.mutationCb({
+      adds: [
+        {
+          parentId: this.mirror.getId(iframeEl),
+          nextId: null,
+          node: childSn,
+        },
+      ],
+      removes: [],
+      texts: [],
+      attributes: [],
+      isAttachIframe: true,
+    });
+    this.loadListener?.(iframeEl);
+    const iframeDoc = getIFrameContentDocument(iframeEl);
+    if (
+      iframeDoc &&
+      iframeDoc.adoptedStyleSheets &&
+      iframeDoc.adoptedStyleSheets.length > 0
+    )
+      this.stylesheetManager.adoptStyleSheets(
+        iframeDoc.adoptedStyleSheets,
+        this.mirror.getId(iframeDoc),
+      );
+  }
+}
+
+/** Identity mirror for SameOriginIframeManager: there are no remote ids to map. */
+const noCrossOriginMirror = {
+  getId: (_iframe: HTMLIFrameElement, id: number) => id,
+  getIds: (_iframe: HTMLIFrameElement, ids: number[]) => ids,
+  getRemoteId: (_iframe: HTMLIFrameElement, id: number) => id,
+  getRemoteIds: (_iframe: HTMLIFrameElement, ids: number[]) => ids,
+  reset: () => {
+    // nothing stored
+  },
+} as unknown as CrossOriginIframeMirror;
+
 export class IframeManager implements IframeManagerInterface {
   private iframes: WeakMap<HTMLIFrameElement, true> = new WeakMap();
   private crossOriginIframeMap: WeakMap<MessageEventSource, HTMLIFrameElement> =

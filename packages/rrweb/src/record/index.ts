@@ -35,6 +35,7 @@ import {
   IframeManager,
   IframeManagerInterface,
   IframeManagerNoop,
+  SameOriginIframeManager,
 } from './iframe-manager';
 import {
   ShadowDomManager,
@@ -60,6 +61,12 @@ export type { CanvasManagerConstructorOptions } from './observers/canvas/canvas-
 declare global {
   const __RRWEB_EXCLUDE_SHADOW_DOM__: boolean;
   const __RRWEB_EXCLUDE_IFRAME__: boolean;
+  /**
+   * Panopticon: drop cross-origin iframe recording (the postMessage bridge,
+   * event id transforms and CrossOriginIframeMirror). Same-origin iframes
+   * and shadow DOM are unaffected.
+   */
+  const __RRWEB_EXCLUDE_CROSS_ORIGIN_IFRAME__: boolean;
   /**
    * Panopticon replay gate: compile `pano:rec:*` performance measures in.
    * Production builds define it false, so the guarded code is dropped.
@@ -121,7 +128,7 @@ function record<T = eventWithTime>(
     mousemoveWait,
     recordDOM = true,
     recordCanvas = false,
-    recordCrossOriginIframes = false,
+    recordCrossOriginIframes: _recordCrossOriginIframes = false,
     recordAfter = options.recordAfter === 'DOMContentLoaded'
       ? options.recordAfter
       : 'load',
@@ -137,6 +144,12 @@ function record<T = eventWithTime>(
   } = options;
 
   registerErrorHandler(errorHandler);
+
+  const excludeCrossOriginIframes =
+    typeof __RRWEB_EXCLUDE_CROSS_ORIGIN_IFRAME__ === 'boolean' &&
+    __RRWEB_EXCLUDE_CROSS_ORIGIN_IFRAME__;
+  const recordCrossOriginIframes =
+    !excludeCrossOriginIframes && _recordCrossOriginIframes;
 
   const inEmittingFrame = recordCrossOriginIframes
     ? window.parent === window
@@ -315,6 +328,12 @@ function record<T = eventWithTime>(
   const iframeManager: IframeManagerInterface =
     typeof __RRWEB_EXCLUDE_IFRAME__ === 'boolean' && __RRWEB_EXCLUDE_IFRAME__
       ? new IframeManagerNoop()
+      : excludeCrossOriginIframes
+      ? new SameOriginIframeManager({
+          mirror,
+          mutationCb: wrappedMutationEmit,
+          stylesheetManager: stylesheetManager,
+        })
       : new IframeManager({
           mirror,
           mutationCb: wrappedMutationEmit,

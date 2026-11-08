@@ -329,6 +329,9 @@ export class CanvasManager implements CanvasManagerInterface {
       errorHandler,
     } = options;
     options.sampling = sampling;
+    if (typeof __PANO_BENCH__ !== 'undefined' && __PANO_BENCH__)
+      (win as unknown as { __panoCanvasStats?: unknown }).__panoCanvasStats =
+        this.stats;
     this.mutationCb = options.mutationCb;
     this.mirror = options.mirror;
     this.options = options;

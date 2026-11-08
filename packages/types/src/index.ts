@@ -611,14 +611,22 @@ export type ImageBitmapDataURLWorkerParams = {
   height: number;
   dataURLOptions: DataURLOptions;
   maxCanvasSize?: [number, number];
+  /**
+   * Panopticon item 8: a full snapshot's pixels (request token). Encoded at
+   * full size, answered with the same token, and the frame dedup state of
+   * the canvas is left alone.
+   */
+  initial?: number;
 };
 
 export type ImageBitmapDataURLWorkerResponse =
   | {
       id: number;
+      initial?: number;
     }
   | {
       id: number;
+      initial?: number;
       type: string;
       base64: string;
       width: number;

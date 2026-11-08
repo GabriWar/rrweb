@@ -1,14 +1,19 @@
 /**
- * Panopticon RR-017: snapshotSliced() walks the DOM in serializeNodeWithId's
- * exact order and, on a page that does not change, produces byte-identical
- * output to the synchronous snapshot() even when it yields after every node.
+ * Panopticon RR-017 / item 8: snapshotSliced() walks a frozen copy of the
+ * page in serializeNodeWithId's exact order and produces byte-identical
+ * output to the synchronous snapshot() taken when it started, even when it
+ * yields after every node and the page changes in between.
  * Run: npx vitest run --config vitest.panopticon.config.ts
  */
 import * as fs from 'fs';
 import * as path from 'path';
 import { JSDOM } from 'jsdom';
 import { describe, expect, it } from 'vitest';
-import snapshot, { cleanupSnapshot, snapshotSliced } from '../src/snapshot';
+import snapshot, {
+  cleanupSnapshot,
+  noteSheetMutation,
+  snapshotSliced,
+} from '../src/snapshot';
 import type { SnapshotSlicer } from '../src/snapshot';
 import { Mirror } from '../src/utils';
 import { NodeType } from '@rrweb/types';
@@ -111,30 +116,31 @@ describe('snapshotSliced (RR-017)', () => {
     expect(await slicedJson(doc, everyNode())).toBe(expected);
   });
 
-  it('a node removed between slices is not serialized; one added to a visited parent is left to the mutation buffer', async () => {
-    const doc = load('<ul id="l"><li id="a">a</li><li id="b">b</li><li id="c">c</li></ul><p id="tail">t</p>');
+  it('the page changing between slices: the snapshot is the page as of its start, byte for byte (item 8)', async () => {
+    const html =
+      '<ul id="l"><li id="a">a</li><li id="b" class="x">b</li><li id="c">c</li></ul>' +
+      '<input id="i" value="v0"><style id="s">.a{color:red}</style><p id="tail">t</p>';
+    const doc = load(html);
+    const expected = syncJson(doc);
     let step = 0;
     const slicer = everyNode(() => {
-      step++;
-      if (step === 4) {
-        doc.getElementById('c')!.remove(); // listed with its parent, not visited yet
-        const d = doc.createElement('li');
-        d.id = 'd';
-        doc.getElementById('l')!.appendChild(d); // parent already listed its children
-      }
+      if (++step !== 4) return;
+      // removed before the walk reached it
+      doc.getElementById('c')!.remove();
+      // added to a parent the walk has listed
+      const d = doc.createElement('li');
+      d.id = 'd';
+      doc.getElementById('l')!.appendChild(d);
+      // attribute, text, form value and CSSOM changes of nodes not walked yet
+      doc.getElementById('b')!.className = 'y';
+      doc.getElementById('tail')!.firstChild!.textContent = 'changed';
+      (doc.getElementById('i') as HTMLInputElement).value = 'v1';
+      const sheet = (doc.getElementById('s') as HTMLStyleElement).sheet!;
+      noteSheetMutation(sheet); // what rrweb's CSSOM patches call first
+      sheet.insertRule('.late{color:blue}', 1);
     });
-    cleanupSnapshot();
-    const sn = await snapshotSliced(doc, { ...OPTIONS, mirror: new Mirror() }, slicer);
-    const ids: string[] = [];
-    const walk = (n: serializedNodeWithId) => {
-      if (n.type === NodeType.Element && typeof n.attributes.id === 'string') ids.push(n.attributes.id);
-      if ('childNodes' in n) n.childNodes.forEach(walk);
-    };
-    walk(sn!);
-    expect(ids).toContain('a');
-    expect(ids).not.toContain('c');
-    expect(ids).not.toContain('d');
-    expect(ids).toContain('tail');
+    expect(await slicedJson(doc, slicer)).toBe(expected);
+    expect(step).toBeGreaterThan(4);
   });
 
   it('a node moved into a not-yet-visited part is serialized once', async () => {
@@ -186,29 +192,21 @@ describe('snapshotSliced (RR-017)', () => {
     expect(new Set(rules).size).toBe(rules.length);
   });
 
-  /** ids renumbered in DFS order: a dropped subtree consumed ids the other run never handed out */
-  function renumber(sn: serializedNodeWithId | null): string {
-    let next = 1;
-    const walk = (n: serializedNodeWithId): unknown => {
-      const out: Record<string, unknown> = { ...n, id: next++ };
-      if ('childNodes' in n) out.childNodes = n.childNodes.map(walk);
-      return out;
-    };
-    return JSON.stringify(sn && walk(sn));
-  }
-
   it.each([
-    ['class', (el: Element) => el.classList.add('rr-block')],
-    ['selector', (el: Element) => el.setAttribute('data-block', '')],
+    ['class', (el: Element) => el.classList.add('rr-block'), (el: Element) => el.classList.remove('rr-block')],
+    ['selector', (el: Element) => el.setAttribute('data-block', ''), (el: Element) => el.removeAttribute('data-block')],
   ])(
-    'an ancestor blocked (%s) between slices: none of its children is serialized, same as snapshot() after the change (privacy fix 2)',
-    async (_how, block) => {
+    'a block (%s) added or removed between slices: the block as of the start decides, as in snapshot() then (privacy: a blocked element never shows its content)',
+    async (_how, block, unblock) => {
       const html =
-        '<div id="p"><span id="s1">secret one</span><span id="s2">secret two</span>' +
-        '<b id="s3"><i>secret three</i></b></div><div id="q"><p id="after">after</p></div>';
+        '<div id="p"><span id="s1">open one</span><span id="s2">open two</span></div>' +
+        '<div id="q"><span id="h1">secret one</span><span id="h2">secret two</span></div><p id="after">after</p>';
       const doc = load(html);
+      block(doc.getElementById('q')!);
+      const expected = syncJson(doc);
+      expect(expected).not.toContain('secret');
       const mirror = new Mirror();
-      let blocked = false;
+      let changed = false;
       cleanupSnapshot();
       const sn = await snapshotSliced(
         doc,
@@ -216,28 +214,18 @@ describe('snapshotSliced (RR-017)', () => {
         {
           shouldYield: () => true,
           yieldSlice: async () => {
-            // #s1 and its text are serialized, #s2 / #s3 still queued
-            if (!blocked && mirror.hasNode(doc.getElementById('s1')!.firstChild!)) {
-              block(doc.getElementById('p')!);
-              blocked = true;
-            }
+            if (changed) return;
+            changed = true;
+            block(doc.getElementById('p')!);
+            unblock(doc.getElementById('q')!);
           },
         },
       );
-      expect(blocked).toBe(true);
+      expect(changed).toBe(true);
       const json = JSON.stringify(sn);
+      expect(json).toBe(expected);
+      expect(json).toContain('open two');
       expect(json).not.toContain('secret');
-      expect(json).not.toMatch(/"id":"s[123]"/);
-      expect(json).toContain('"rr_width"');
-      expect(json).toContain('"id":"after"');
-      // the dropped nodes are out of the mirror: later mutations of them are filtered
-      expect(mirror.has(mirror.getId(doc.getElementById('s1')!))).toBe(false);
-      expect(mirror.has(mirror.getId(doc.getElementById('s1')!.firstChild!))).toBe(false);
-      expect(mirror.has(mirror.getId(doc.getElementById('p')!))).toBe(true);
-      // what the synchronous snapshot of the changed page gives
-      cleanupSnapshot();
-      const after = snapshot(doc, { ...OPTIONS, mirror: new Mirror() });
-      expect(renumber(sn)).toBe(renumber(after));
     },
   );
 

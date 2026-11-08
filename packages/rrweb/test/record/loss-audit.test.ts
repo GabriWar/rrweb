@@ -81,7 +81,7 @@ describe('loss audit (Panopticon item 8)', () => {
     expect(coalesced.length).toBeLessThan(plain.length);
   });
 
-  it('a sliced snapshot misses an element removed before the walk reached it', async () => {
+  it('a sliced snapshot records an element removed before the walk reached it, then its removal, as the synchronous one', async () => {
     const removeLate = async () => {
       // record() returned: a sliced walk has only serialized its first slice
       document.getElementById('i299')!.remove();
@@ -89,20 +89,24 @@ describe('loss audit (Panopticon item 8)', () => {
     };
     const sync = await recordWith({}, removeLate);
     const sliced = await recordWith({ snapshotSliceMs: 0.001 }, removeLate);
-    const json = (evs: eventWithTime[]) => JSON.stringify(evs);
+    const full = (evs: eventWithTime[]) => JSON.stringify(evs.find((e) => e.type === EventType.FullSnapshot)!.data);
     // synchronous: i299 is in the FullSnapshot, then its removal follows
-    const syncFull = JSON.stringify(sync.find((e) => e.type === EventType.FullSnapshot)!.data);
-    expect(syncFull).toContain('"i299"');
+    expect(full(sync)).toContain('"i299"');
     expect(values(sync).some((v) => v.startsWith('rm '))).toBe(true);
-    // sliced: the element never appears and no removal is recorded, so the
-    // replay never shows a node the page displayed when recording started
-    expect(json(sliced)).not.toContain('"i299"');
-    expect(values(sliced).some((v) => v.startsWith('rm '))).toBe(false);
+    // sliced (frozen when it started): the same FullSnapshot, the same removal
+    expect(full(sliced)).toBe(full(sync));
+    expect(values(sliced)).toEqual(values(sync));
   });
 
   it('with both options at their defaults the stream is the unoptimized one, value for value', async () => {
     const a = values(await recordWith({}, intermediateValues));
     const b = values(await recordWith({ coalesceMutations: false, snapshotSliceMs: 0 }, intermediateValues));
+    expect(b).toEqual(a);
+  });
+
+  it('a sliced snapshot keeps every value of the changes made while it walks, each with its own callback', async () => {
+    const a = values(await recordWith({}, intermediateValues));
+    const b = values(await recordWith({ snapshotSliceMs: 0.001 }, intermediateValues));
     expect(b).toEqual(a);
   });
 });

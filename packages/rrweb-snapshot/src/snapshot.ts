@@ -672,8 +672,53 @@ export function setAssetHook(hook: AssetHook | null): AssetHook | null {
   return prev;
 }
 
+/**
+ * Panopticon item 8: called for every canvas a full snapshot serializes
+ * while canvas recording is on. A hook that returns true takes over the
+ * pixels: it captures them now (an ImageBitmap is a copy of the canvas at
+ * this instant) and calls `fill` with the canvas's PNG data URL, or null
+ * for a blank canvas, once they are encoded off the main thread. The
+ * recorder holds the FullSnapshot until every fill has run, so the stream
+ * carries the same pixels the synchronous toDataURL() would have read.
+ */
+export type CanvasPixelsHook = (
+  canvas: HTMLCanvasElement,
+  dataURLOptions: DataURLOptions,
+  fill: (dataURL: string | null) => void,
+) => boolean;
+let canvasPixelsHook: CanvasPixelsHook | null = null;
+/**
+ * Values the asset hook should take while a full snapshot is held back
+ * (sliced, or waiting for canvas pixels): the recorder starts a new side
+ * table at every Meta, so a value handed to the hook before the Meta is
+ * dispatched would be dropped with the old one. While deferral is on, the
+ * hook runs at dispatch time instead (applyDeferredAssetHooks, right after
+ * the Meta), in order, on exactly the attributes it would have seen.
+ */
+let deferAssets = false;
+const deferredAssets: Array<[attributes, AssetHook]> = [];
+export function setAssetDeferral(on: boolean, drop = false): void {
+  deferAssets = on;
+  if (drop) deferredAssets.length = 0;
+}
+export function applyDeferredAssetHooks(): void {
+  for (const [a, hook] of deferredAssets.splice(0)) applyAssetHookNow(a, hook);
+}
+/** Install the canvas pixels hook (record() sets it around full snapshots only). */
+export function setCanvasPixelsHook(
+  hook: CanvasPixelsHook | null,
+): CanvasPixelsHook | null {
+  const prev = canvasPixelsHook;
+  canvasPixelsHook = hook;
+  return prev;
+}
+
 /** Hand the element's large values to the asset hook (RR-030). */
 function applyAssetHook(attributes: attributes, hook: AssetHook) {
+  if (deferAssets) deferredAssets.push([attributes, hook]);
+  else applyAssetHookNow(attributes, hook);
+}
+function applyAssetHookNow(attributes: attributes, hook: AssetHook) {
   for (const name in attributes) {
     const v = attributes[name];
     if (typeof v !== 'string') continue;
@@ -948,6 +993,43 @@ function serializeTextNode(
   };
 }
 
+/** rr_dataURL of a canvas read synchronously (none for a blank canvas). */
+function canvasDataURLNow(
+  n: HTMLCanvasElement,
+  dataURLOptions: DataURLOptions,
+  attributes: attributes,
+) {
+  if ((n as ICanvas).__context === '2d') {
+    // only record this on 2d canvas
+    if (!is2DCanvasBlank(n)) {
+      attributes.rr_dataURL = n.toDataURL(
+        dataURLOptions.type,
+        dataURLOptions.quality,
+      );
+    }
+  } else if (!('__context' in n)) {
+    // context is unknown, better not call getContext to trigger it
+    const canvasDataURL = n.toDataURL(
+      dataURLOptions.type,
+      dataURLOptions.quality,
+    );
+
+    // create blank canvas of same dimensions
+    const blankCanvas = n.ownerDocument.createElement('canvas');
+    blankCanvas.width = n.width;
+    blankCanvas.height = n.height;
+    const blankCanvasDataURL = blankCanvas.toDataURL(
+      dataURLOptions.type,
+      dataURLOptions.quality,
+    );
+
+    // no need to save dataURL if it's the same as blank canvas
+    if (canvasDataURL !== blankCanvasDataURL) {
+      attributes.rr_dataURL = canvasDataURL;
+    }
+  }
+}
+
 function serializeElementNode(
   n: HTMLElement,
   options: {
@@ -1004,6 +1086,11 @@ function serializeElementNode(
     unblockSelector,
   );
   const tagName = getValidTagName(n);
+  // Panopticon item 8: `n` is the inert copy of the page as of the frozen
+  // snapshot's start; what a copy does not carry (CSSOM, form state, layout,
+  // pixels, media, frames) was read from the live element at that instant
+  const fz = frozenNow;
+  const live = fz ? fz.live : n;
   let attributes: attributes = {};
   const len = n.attributes.length;
   for (let i = 0; i < len; i++) {
@@ -1025,12 +1112,14 @@ function serializeElementNode(
   // remote css
   if (tagName === 'link' && inlineStylesheet) {
     //TODO: maybe replace this `.styleSheets` with original one
-    const stylesheet = Array.from(doc.styleSheets).find((s) => {
-      return s.href === (n as HTMLLinkElement).href;
-    });
+    const stylesheet = fz
+      ? fz.f.sheets.get(live) || undefined
+      : Array.from(doc.styleSheets).find((s) => {
+          return s.href === (n as HTMLLinkElement).href;
+        });
     let cssText: string | null = null;
     if (stylesheet) {
-      cssText = stringifyStylesheet(stylesheet);
+      cssText = fz ? frozenSheetText(fz.f, stylesheet) : stringifyStylesheet(stylesheet);
     }
     if (cssText) {
       attributes.rel = null;
@@ -1039,10 +1128,16 @@ function serializeElementNode(
       attributes._cssText = absoluteToStylesheet(cssText, stylesheet!.href!);
     }
   }
-  if (tagName === 'style' && (n as HTMLStyleElement).sheet) {
-    let cssText = stringifyStylesheet(
-      (n as HTMLStyleElement).sheet as CSSStyleSheet,
-    );
+  const styleSheet =
+    tagName !== 'style'
+      ? null
+      : fz
+      ? fz.f.sheets.get(live)
+      : (n as HTMLStyleElement).sheet;
+  if (tagName === 'style' && styleSheet) {
+    let cssText = fz
+      ? frozenSheetText(fz.f, styleSheet as CSSStyleSheet)
+      : stringifyStylesheet(styleSheet as CSSStyleSheet);
     if (cssText) {
       if (n.childNodes.length > 1) {
         cssText = markCssSplits(cssText, n as HTMLStyleElement);
@@ -1064,8 +1159,9 @@ function serializeElementNode(
       | HTMLOptionElement;
 
     const type = getInputType(el);
-    const value = getInputValue(el, toUpperCase(tagName), type);
-    const checked = (el as HTMLInputElement).checked;
+    const form = fz ? fz.f.form.get(live) : undefined;
+    const value = form ? form.value : getInputValue(el, toUpperCase(tagName), type);
+    const checked = form ? form.checked : (el as HTMLInputElement).checked;
     if (type !== 'submit' && type !== 'button' && value) {
       const forceMask = needMaskingText(
         el,
@@ -1093,7 +1189,10 @@ function serializeElementNode(
     }
   }
   if (tagName === 'option') {
-    if ((n as HTMLOptionElement).selected && !maskInputOptions['select']) {
+    const selected = fz
+      ? !!fz.f.form.get(live)?.selected
+      : (n as HTMLOptionElement).selected;
+    if (selected && !maskInputOptions['select']) {
       attributes.selected = true;
     } else {
       // ignore the html attribute (which corresponds to DOM (n as HTMLOptionElement).defaultSelected)
@@ -1106,42 +1205,39 @@ function serializeElementNode(
     // register what type of dialog is this
     // `modal` or `non-modal`
     // this is used to trigger `showModal()` or `show()` on replay (outside of rrweb-snapshot, in rrweb)
-    (attributes as DialogAttributes).rr_open_mode = n.matches('dialog:modal')
+    (attributes as DialogAttributes).rr_open_mode = (
+      fz ? fz.f.modal.has(live) : n.matches('dialog:modal')
+    )
       ? 'modal'
       : 'non-modal';
   }
 
   // canvas image data
-  if (tagName === 'canvas' && recordCanvas) {
-    if ((n as ICanvas).__context === '2d') {
-      // only record this on 2d canvas
-      if (!is2DCanvasBlank(n as HTMLCanvasElement)) {
-        attributes.rr_dataURL = (n as HTMLCanvasElement).toDataURL(
-          dataURLOptions.type,
-          dataURLOptions.quality,
-        );
-      }
-    } else if (!('__context' in n)) {
-      // context is unknown, better not call getContext to trigger it
-      const canvasDataURL = (n as HTMLCanvasElement).toDataURL(
-        dataURLOptions.type,
-        dataURLOptions.quality,
-      );
-
-      // create blank canvas of same dimensions
-      const blankCanvas = doc.createElement('canvas');
-      blankCanvas.width = (n as HTMLCanvasElement).width;
-      blankCanvas.height = (n as HTMLCanvasElement).height;
-      const blankCanvasDataURL = blankCanvas.toDataURL(
-        dataURLOptions.type,
-        dataURLOptions.quality,
-      );
-
-      // no need to save dataURL if it's the same as blank canvas
-      if (canvasDataURL !== blankCanvasDataURL) {
-        attributes.rr_dataURL = canvasDataURL;
-      }
-    }
+  // (a blocked canvas is replaced by its placeholder below: never captured)
+  const pixelsHook = canvasPixelsHook;
+  const hookAtSerialize = assetHook;
+  const canvasAttributes = attributes;
+  const slot = fz && tagName === 'canvas' ? fz.f.canvas.get(live) : undefined;
+  if (slot) {
+    // pixels taken when the snapshot started (freezeDocument)
+    if (slot.url === undefined) slot.target = attributes;
+    else if (slot.url !== null) attributes.rr_dataURL = slot.url;
+  } else if (fz && tagName === 'canvas') {
+    // blocked, or not recorded: no pixels, as the live serialization decides
+  } else if (
+    tagName === 'canvas' &&
+    recordCanvas &&
+    !needBlock &&
+    pixelsHook &&
+    pixelsHook(n as HTMLCanvasElement, dataURLOptions, (dataURL) => {
+      if (dataURL === null) return;
+      canvasAttributes.rr_dataURL = dataURL;
+      if (hookAtSerialize) deferredAssets.push([canvasAttributes, hookAtSerialize]);
+    })
+  ) {
+    // pixels captured now, encoded off the main thread (see CanvasPixelsHook)
+  } else if (tagName === 'canvas' && recordCanvas) {
+    canvasDataURLNow(n as HTMLCanvasElement, dataURLOptions, attributes);
   }
   // save image offline
   if (tagName === 'img' && inlineImages) {
@@ -1189,10 +1285,9 @@ function serializeElementNode(
   // media elements
   if (['audio', 'video'].includes(tagName)) {
     const mediaAttributes = attributes as mediaAttributes;
-    mediaAttributes.rr_mediaState = (n as HTMLMediaElement).paused
-      ? 'paused'
-      : 'played';
-    attributes.rr_mediaCurrentTime = (n as HTMLMediaElement).currentTime;
+    const m = fz ? fz.f.media.get(live) : (n as HTMLMediaElement);
+    mediaAttributes.rr_mediaState = !m || m.paused ? 'paused' : 'played';
+    attributes.rr_mediaCurrentTime = m ? m.currentTime : 0;
   }
   // Scroll
   if (!newlyAddedElement) {
@@ -1200,16 +1295,19 @@ function serializeElementNode(
     // Since `scrollTop` & `scrollLeft` are always 0 when an element is added to the DOM.
     // And scrolls also get picked up by rrweb's ScrollObserver
     // So we can safely skip the `scrollTop/Left` calls for newly added elements
-    if (n.scrollLeft) {
-      attributes.rr_scrollLeft = n.scrollLeft;
+    const sc = fz ? fz.f.scroll.get(live) : n;
+    if (sc && sc.scrollLeft) {
+      attributes.rr_scrollLeft = sc.scrollLeft;
     }
-    if (n.scrollTop) {
-      attributes.rr_scrollTop = n.scrollTop;
+    if (sc && sc.scrollTop) {
+      attributes.rr_scrollTop = sc.scrollTop;
     }
   }
   // block element
   if (needBlock) {
-    const { width, height } = n.getBoundingClientRect();
+    const { width, height } = fz
+      ? fz.f.rect.get(live) || { width: 0, height: 0 }
+      : n.getBoundingClientRect();
     attributes = {
       class: attributes.class,
       rr_width: `${width}px`,
@@ -1220,7 +1318,12 @@ function serializeElementNode(
   if (tagName === 'iframe' && !keepIframeSrcFn(attributes.src as string)) {
     // Don't try to access `contentDocument` if iframe is blocked, otherwise it
     // will trigger browser warnings.
-    if (!needBlock && !getIFrameContentDocument(n as HTMLIFrameElement)) {
+    if (
+      !needBlock &&
+      !(fz
+        ? fz.f.iframeDoc.has(live)
+        : getIFrameContentDocument(n as HTMLIFrameElement))
+    ) {
       // we can't record it directly as we can't see into it
       // preserve the src attribute so a decision can be taken at replay time
       attributes.rr_src = attributes.src;
@@ -1230,7 +1333,8 @@ function serializeElementNode(
 
   let isCustomElement: true | undefined;
   try {
-    if (customElements.get(tagName)) isCustomElement = true;
+    if (fz ? fz.f.custom.get(tagName) : customElements.get(tagName))
+      isCustomElement = true;
   } catch (e) {
     // In case old browsers don't support customElements
   }
@@ -1507,30 +1611,49 @@ function serializeNodeHead(
   }
 
   let id: number | undefined;
-  if (mirror.hasNode(n)) {
-    // Reuse the previous id
-    id = mirror.getId(n);
-  } else if (
+  const excluded = () =>
     slimDOMExcluded(_serializedNode, slimDOMOptions) ||
     (!preserveWhiteSpace &&
       _serializedNode.type === NodeType.Text &&
       !_serializedNode.isStyle &&
-      !_serializedNode.textContent.trim().length)
-  ) {
-    id = IGNORED_NODE;
+      !_serializedNode.textContent.trim().length);
+  // Panopticon item 8: a frozen snapshot's node (an inert copy) takes the id
+  // freezeDocument gave its live node when the snapshot started, and fills
+  // the mirror entry made then; onSerialize and the load hooks ran then too
+  const fz = frozenNow;
+  let serializedNode: serializedNodeWithId;
+  if (fz) {
+    const shell = fz.f.shells[fz.k];
+    if (excluded()) id = IGNORED_NODE;
+    else if (shell && shell.id > 0) id = shell.id;
+    else id = genId(); // freezeDocument decided otherwise: a fresh id
+    if (shell && shell.id === id) {
+      for (const key of Object.keys(shell)) delete (shell as Record<string, unknown>)[key];
+      serializedNode = Object.assign(shell, _serializedNode, { id });
+    } else {
+      serializedNode = Object.assign(_serializedNode, { id });
+      if (id !== IGNORED_NODE) fz.mirror.add(fz.live, serializedNode);
+      else if (shell) shell.id = IGNORED_NODE;
+    }
   } else {
-    id = genId();
+    if (mirror.hasNode(n)) {
+      // Reuse the previous id
+      id = mirror.getId(n);
+    } else if (excluded()) {
+      id = IGNORED_NODE;
+    } else {
+      id = genId();
+    }
+    serializedNode = Object.assign(_serializedNode, { id });
+    // add IGNORED_NODE to mirror to track nextSiblings
+    mirror.add(n, serializedNode);
   }
-
-  const serializedNode = Object.assign(_serializedNode, { id });
-  // add IGNORED_NODE to mirror to track nextSiblings
-  mirror.add(n, serializedNode);
 
   if (id === IGNORED_NODE) {
     return null; // slimDOM
   }
 
-  if (onSerialize) {
+  if (onSerialize && !fz) {
     onSerialize(n);
   }
   let recordChild = !skipChild;
@@ -2024,184 +2147,428 @@ export interface SnapshotSlicer {
 }
 
 /**
- * snapshot(), serialized in slices: an explicit-stack walk that visits nodes
- * in exactly serializeNodeWithId's order (children, then the shadow root,
- * then the node's load hooks) and may pause between any two nodes. Each
- * node is serialized atomically (a stylesheet's text included), so a page
- * that does not change while slicing gets byte-identical output.
- *
- * The page can run between slices. The recorder keeps rrweb's mutation
- * buffers locked meanwhile, so every change is still recorded; here a node
- * that left its parent since the parent's children were listed is skipped
- * (a move re-adds it through the buffer), and a node is never serialized
- * twice.
+ * Panopticon item 8: the page as of one instant, to be serialized later
+ * (snapshotSliced). freezeDocument() takes, synchronously:
+ *  - an inert copy of the document (importNode into a document without a
+ *    browsing context: no script, no custom element constructor, no fetch),
+ *    which keeps every node, attribute and text value as they were;
+ *  - the live nodes in the same pre-order, so copy k stands for live k;
+ *  - what a copy does not carry, read from the live nodes: form state,
+ *    scroll offsets, media state, modal dialogs, blocked elements' boxes,
+ *    readable iframes, defined custom elements, each <style>/<link>'s
+ *    CSSStyleSheet object, and canvas pixels (as ImageBitmaps, through the
+ *    canvas pixels hook, or synchronously without one);
+ *  - every id the synchronous snapshot would give, in the same order, each
+ *    node already in the mirror (an empty entry the walk fills), and
+ *    onSerialize plus the iframe / stylesheet / blocked image load hooks
+ *    run for each node, as the synchronous snapshot runs them.
+ * The page then runs between slices: rrweb's observers record every change
+ * with its own time against those ids, and the walk serializes the copy,
+ * so the result is byte for byte the synchronous snapshot of the instant
+ * the freeze was taken. A stylesheet the page edits through the CSSOM
+ * before the walk reaches it is read first (noteSheetMutation).
+ * Returns null where a copy cannot stand for the page (open shadow roots,
+ * adopted stylesheets, inline images, privacy selectors that depend on
+ * state a copy does not have): the caller takes the synchronous snapshot.
+ */
+export type FrozenDocument = {
+  /** live nodes, pre-order; [0] is the document */
+  live: Node[];
+  /** copies of the document's children (a doctype is its own copy) */
+  roots: Node[];
+  /** mirror entry by index (null: no id, under a skipped subtree) */
+  shells: Array<serializedNodeWithId | null>;
+  /** index after each node's subtree */
+  end: Int32Array;
+  mirror: Mirror;
+  options: SerializeNodeOptions;
+  form: Map<Node, { value: string; checked: boolean; selected: boolean }>;
+  scroll: Map<Node, { scrollLeft: number; scrollTop: number }>;
+  media: Map<Node, { paused: boolean; currentTime: number }>;
+  modal: Set<Node>;
+  rect: Map<Node, { width: number; height: number }>;
+  iframeDoc: Set<Node>;
+  custom: Map<string, boolean>;
+  sheets: Map<Node, CSSStyleSheet | null>;
+  /** CSSOM text read before a change the page made after the freeze */
+  sheetText: Map<CSSStyleSheet, string>;
+  canvas: Map<
+    Node,
+    { url: string | null | undefined; target?: attributes }
+  >;
+  /** canvas pixels still on their way */
+  pending: number;
+  onPixels: (() => void) | null;
+};
+
+let frozenNow: { f: FrozenDocument; k: number; live: Node; mirror: Mirror } | null =
+  null;
+/** Frozen snapshots still walking, for noteSheetMutation. */
+const walkingFrozen = new Set<FrozenDocument>();
+
+/**
+ * Called by rrweb's CSSOM patches before a stylesheet changes: a frozen
+ * snapshot that has not serialized that sheet yet reads it now, so it
+ * serializes the rules it had when the freeze was taken.
+ */
+export function noteSheetMutation(sheet: CSSStyleSheet | null | undefined): void {
+  if (!sheet || !walkingFrozen.size) return;
+  let root: CSSStyleSheet = sheet;
+  for (let i = 0; root.parentStyleSheet && i < 32; i++) root = root.parentStyleSheet;
+  for (const f of walkingFrozen) {
+    if (f.sheetText.has(root)) continue;
+    for (const s of f.sheets.values())
+      if (s === root) {
+        try {
+          f.sheetText.set(root, stringifyStylesheet(root) || '');
+        } catch {
+          // unreadable (cross-origin): the walk reads nothing either
+        }
+        break;
+      }
+  }
+}
+
+function frozenSheetText(f: FrozenDocument, sheet: CSSStyleSheet): string | null {
+  const t = f.sheetText.get(sheet);
+  return t !== undefined ? t || null : stringifyStylesheet(sheet);
+}
+
+/** Selectors a copy cannot match as the live page does (element state). */
+const STATEFUL_SELECTOR =
+  /:(?:hover|active|focus|target|defined|fullscreen|modal|popover-open|open|playing|paused|seeking|buffering|stalled|muted|volume-locked|picture-in-picture|state|host|scope|root|autofill|-webkit-autofill|user-valid|user-invalid|current|past|future|visited|has-slotted|local-link)/i;
+
+const FROZEN_ABORT = new Error('rrweb-snapshot: page cannot be frozen');
+
+export function freezeDocument(
+  n: Document,
+  options?: SnapshotOptions,
+): FrozenDocument | null {
+  const o = snapshotSerializeOptions(n, options);
+  if (o.inlineImages) return null;
+  for (const sel of [
+    o.blockSelector,
+    o.unblockSelector,
+    o.maskTextSelector,
+    o.unmaskTextSelector,
+  ])
+    if (sel && STATEFUL_SELECTOR.test(sel)) return null;
+  if (n.adoptedStyleSheets && n.adoptedStyleSheets.length) return null;
+  const slim = o.slimDOMOptions;
+  // node kinds: 0 no id (skipped), 1 id, 2 ignored (IGNORED_NODE)
+  const live: Node[] = [];
+  const kind: number[] = [];
+  const endAt: number[] = [];
+  const tails: number[] = [];
+  const preserveWS: boolean[] = [];
+  const blocked: boolean[] = [];
+  const f: FrozenDocument = {
+    live,
+    roots: [],
+    shells: [],
+    end: null as unknown as Int32Array,
+    mirror: o.mirror,
+    options: o,
+    form: new Map(),
+    scroll: new Map(),
+    media: new Map(),
+    modal: new Set(),
+    rect: new Map(),
+    iframeDoc: new Set(),
+    custom: new Map(),
+    sheets: new Map(),
+    sheetText: new Map(),
+    canvas: new Map(),
+    pending: 0,
+    onPixels: null,
+  };
+  const docSheets = Array.from(n.styleSheets);
+  // phase 1: read only (nothing changes if the page cannot be frozen)
+  const visit = (node: Node, skip: boolean, keepWS: boolean) => {
+    const k = live.length;
+    live.push(node);
+    preserveWS.push(keepWS);
+    blocked.push(false);
+    let childSkip = skip;
+    let childWS = keepWS;
+    let lightSkip = false;
+    if (skip) kind.push(0);
+    else {
+      const t = node.nodeType;
+      if (t === node.DOCUMENT_NODE || t === node.DOCUMENT_TYPE_NODE || t === node.CDATA_SECTION_NODE) kind.push(1);
+      else if (t === node.COMMENT_NODE) kind.push(slim.comment ? 2 : 1);
+      else if (t === node.TEXT_NODE) {
+        // serializeNodeHead drops a whitespace-only text where white space
+        // is not kept (<head>); a <style>'s text serializes as '' once its
+        // rules were captured as _cssText
+        const parent = node.parentNode as HTMLStyleElement | null;
+        let captured = false;
+        if (!keepWS && parent && parent.tagName === 'STYLE') {
+          try {
+            captured = !!(parent.sheet && parent.sheet.cssRules.length);
+          } catch {
+            // unreadable rules: kept as text
+          }
+        }
+        kind.push(!keepWS && (captured || !(node.textContent || '').trim().length) ? 2 : 1);
+      } else if (t === node.ELEMENT_NODE) {
+        const el = node as HTMLElement;
+        if (dom.shadowRoot(el)) throw FROZEN_ABORT;
+        const tagName = getValidTagName(el);
+        let excluded = false;
+        if (tagName === 'script' || tagName === 'link' || tagName === 'meta') {
+          const a: attributes = {};
+          for (const name of ['rel', 'href', 'name', 'property', 'http-equiv'])
+            if (el.hasAttribute(name)) a[name] = el.getAttribute(name);
+          excluded = slimDOMExcluded(
+            { type: NodeType.Element, tagName, attributes: a, childNodes: [] },
+            slim,
+          );
+        }
+        if (excluded) {
+          kind.push(2);
+        } else {
+          kind.push(1);
+          const needBlock = _isBlockedElement(el, o.blockClass, o.blockSelector, o.unblockSelector);
+          blocked[k] = needBlock;
+          if (el.scrollLeft || el.scrollTop)
+            f.scroll.set(el, { scrollLeft: el.scrollLeft, scrollTop: el.scrollTop });
+          if (needBlock) {
+            const r = el.getBoundingClientRect();
+            f.rect.set(el, { width: r.width, height: r.height });
+            childSkip = true;
+          }
+          if (tagName === 'input' || tagName === 'textarea' || tagName === 'select' || tagName === 'option') {
+            const fe = el as HTMLInputElement;
+            const value = getInputValue(fe, toUpperCase(tagName), getInputType(fe));
+            f.form.set(el, {
+              value,
+              checked: fe.checked,
+              selected: !!(el as unknown as HTMLOptionElement).selected,
+            });
+            if (tagName === 'textarea' && value) lightSkip = true;
+          } else if (tagName === 'audio' || tagName === 'video') {
+            const me = el as HTMLMediaElement;
+            f.media.set(el, { paused: me.paused, currentTime: me.currentTime });
+          } else if (tagName === 'dialog') {
+            if ((el as HTMLDialogElement).open && el.matches('dialog:modal')) f.modal.add(el);
+          } else if (tagName === 'iframe') {
+            if (getIFrameContentDocument(el as HTMLIFrameElement)) f.iframeDoc.add(el);
+          } else if (tagName === 'style') {
+            f.sheets.set(el, (el as HTMLStyleElement).sheet as CSSStyleSheet | null);
+          } else if (tagName === 'link' && o.inlineStylesheet) {
+            const href = (el as HTMLLinkElement).href;
+            f.sheets.set(el, docSheets.find((sh) => sh.href === href) || null);
+          } else if (tagName === 'head' && slim.headWhitespace) {
+            childWS = false;
+          }
+          if (tagName.includes('-') && !f.custom.has(tagName)) {
+            try {
+              f.custom.set(tagName, !!customElements.get(tagName));
+            } catch {
+              f.custom.set(tagName, false);
+            }
+          }
+          tails.push(k);
+        }
+        if (excluded) childSkip = true;
+      } else kind.push(0); // not serialized by rrweb either
+      if (kind[k] === 2) childSkip = true;
+    }
+    for (let c = node.firstChild; c; c = c.nextSibling)
+      visit(c, childSkip || (lightSkip && !childSkip), childWS);
+    endAt[k] = live.length;
+  };
+  try {
+    visit(n, false, o.preserveWhiteSpace !== false);
+  } catch (err) {
+    if (err === FROZEN_ABORT) return null;
+    throw err;
+  }
+  // the inert copy, in the same pre-order (index 0 stands for the document)
+  const inert = n.implementation.createHTMLDocument('');
+  try {
+    for (let c = n.firstChild; c; c = c.nextSibling)
+      f.roots.push(c.nodeType === c.DOCUMENT_TYPE_NODE ? c : inert.importNode(c, true));
+  } catch {
+    return null;
+  }
+  f.end = Int32Array.from(endAt);
+  // phase 2: ids, mirror entries, hooks and pixels, in the synchronous order
+  for (let k = 0; k < live.length; k++) {
+    const node = live[k];
+    if (kind[k] === 0) {
+      f.shells.push(null);
+      continue;
+    }
+    const shell = { id: kind[k] === 2 ? IGNORED_NODE : genId() } as serializedNodeWithId;
+    f.shells.push(shell);
+    o.mirror.add(node, shell);
+    if (kind[k] === 2) continue;
+    if (o.onSerialize) o.onSerialize(node);
+    if (node.nodeType === node.ELEMENT_NODE && getValidTagName(node as HTMLElement) === 'canvas' && o.recordCanvas && !blocked[k])
+      freezeCanvas(f, node as HTMLCanvasElement, o.dataURLOptions || {});
+  }
+  // load hooks after the children, as serializeNodeTail runs them
+  for (const k of tails) {
+    const el = live[k] as HTMLElement;
+    const tagName = getValidTagName(el);
+    if (tagName !== 'iframe' && tagName !== 'img' && tagName !== 'link') continue;
+    const shell = f.shells[k]!;
+    Object.assign(shell, {
+      type: NodeType.Element,
+      tagName,
+      attributes: { rel: el.getAttribute('rel'), href: el.getAttribute('href') },
+      childNodes: [],
+      needBlock: blocked[k] || undefined,
+    });
+    serializeNodeTail(el, shell, { ...o, preserveWhiteSpace: preserveWS[k] });
+  }
+  return f;
+}
+
+/** A canvas's pixels as of the freeze. */
+function freezeCanvas(
+  f: FrozenDocument,
+  canvas: HTMLCanvasElement,
+  dataURLOptions: DataURLOptions,
+) {
+  const slot: { url: string | null | undefined; target?: attributes } = { url: undefined };
+  f.canvas.set(canvas, slot);
+  const hookAtFreeze = assetHook;
+  const taken =
+    canvasPixelsHook &&
+    canvasPixelsHook(canvas, dataURLOptions, (dataURL) => {
+      slot.url = dataURL;
+      if (slot.target && dataURL !== null) {
+        slot.target.rr_dataURL = dataURL;
+        if (hookAtFreeze) deferredAssets.push([slot.target, hookAtFreeze]);
+      }
+      f.pending--;
+      if (f.pending === 0 && f.onPixels) f.onPixels();
+    });
+  if (taken) {
+    f.pending++;
+    return;
+  }
+  // no worker: read them now, as serializeElementNode would
+  const probe: attributes = {};
+  canvasDataURLNow(canvas, dataURLOptions, probe);
+  slot.url = typeof probe.rr_dataURL === 'string' ? probe.rr_dataURL : null;
+}
+
+/**
+ * snapshot(), serialized in slices of a frozen copy of the page
+ * (freezeDocument; without one it freezes the page now). Nodes are visited
+ * in serializeNodeWithId's order and the walk may pause between any two;
+ * the copy never changes, so the result is the synchronous snapshot of the
+ * freeze, byte for byte. A page that cannot be frozen gets the synchronous
+ * snapshot right away.
  */
 export async function snapshotSliced(
   n: Document,
   options: SnapshotOptions | undefined,
   slicer: SnapshotSlicer,
+  frozen?: FrozenDocument | null,
 ): Promise<serializedNodeWithId | null> {
-  const rootOptions = snapshotSerializeOptions(n, options);
-  const root = serializeNodeHead(n, rootOptions);
-  if (!root) return null;
-  const seen = new WeakSet<Node>([n]);
+  const f = frozen === undefined ? freezeDocument(n, options) : frozen;
+  if (!f) {
+    const node = snapshot(n, options);
+    slicer.control?.(() => node);
+    return node;
+  }
+  const rootOptions = f.options;
+  frozenNow = { f, k: 0, live: n, mirror: f.mirror };
+  let root: ReturnType<typeof serializeNodeHead>;
+  try {
+    root = serializeNodeHead(n, rootOptions);
+  } finally {
+    frozenNow = null;
+  }
+  if (!root || !root.childOptions) return root ? root.serializedNode : null;
   type Frame = {
-    n: Node;
     sn: serializedNodeWithId;
-    options: SerializeNodeOptions;
     childOptions: SerializeNodeOptions;
-    queue: Node[];
+    kids: ArrayLike<Node>;
     i: number;
-    parent: Node;
-    shadowStarted: boolean;
-    markShadow: boolean;
+    k: number;
   };
-  const stack: Frame[] = [];
-  const finish = (
-    node: Node,
-    sn: serializedNodeWithId,
-    opts: SerializeNodeOptions,
-    markShadow: boolean,
-  ) => {
-    serializeNodeTail(node, sn, opts);
-    if (markShadow) sn.isShadow = true;
-  };
-  const open = (
-    node: Node,
-    head: NonNullable<ReturnType<typeof serializeNodeHead>>,
-    opts: SerializeNodeOptions,
-    markShadow: boolean,
-  ) => {
-    if (
-      !head.childOptions ||
-      (head.serializedNode.type !== NodeType.Document &&
-        head.serializedNode.type !== NodeType.Element)
-    ) {
-      finish(node, head.serializedNode, opts, markShadow);
-      return;
-    }
-    stack.push({
-      n: node,
-      sn: head.serializedNode,
-      options: opts,
-      childOptions: head.childOptions,
-      queue: head.skipLightChildren ? [] : Array.from(dom.childNodes(node)),
-      i: 0,
-      parent: node,
-      shadowStarted: false,
-      markShadow,
-    });
-  };
-  /**
-   * The page ran during the yield: an open ancestor may have become blocked
-   * (block class / selector added between slices). Its queued children must
-   * not be serialized and the ones already serialized are dropped, so the
-   * output is what a synchronous snapshot taken now gives for that element:
-   * the blocked placeholder, no children (privacy, TOCTOU). The dropped
-   * nodes leave the mirror too, so later text / attribute mutations of them
-   * are filtered out like for any node a snapshot never saw.
-   */
-  const { blockClass, blockSelector, unblockSelector, mirror } = rootOptions;
-  const recheckBlocked = () => {
-    for (let k = 0; k < stack.length; k++) {
-      const f = stack[k];
-      if (
-        !isElement(f.n) ||
-        !_isBlockedElement(
-          f.n as HTMLElement,
-          blockClass,
-          blockSelector,
-          unblockSelector,
-        )
-      )
-        continue;
-      stack.length = k;
-      forgetChildren(f.sn, mirror);
-      // same id (the mirror has the node), no second onSerialize
-      const head = serializeNodeHead(f.n, { ...f.options, onSerialize: undefined });
-      const sn = f.sn as unknown as Record<string, unknown>;
-      for (const key of Object.keys(sn)) delete sn[key];
-      if (head) Object.assign(sn, head.serializedNode);
-      finish(f.n, f.sn, f.options, f.markShadow);
-      return;
-    }
-  };
+  const stack: Frame[] = [
+    { sn: root.serializedNode, childOptions: root.childOptions, kids: f.roots, i: 0, k: 1 },
+  ];
+  walkingFrozen.add(f);
   let forced = false;
   let walking = false;
   let done = false;
   let failed = false;
-  /** Walk until the end (true) or until a slice should yield (false). */
   const walk = (): boolean => {
     walking = true;
     try {
       while (stack.length) {
-        const f = stack[stack.length - 1];
-        if (f.i < f.queue.length) {
-          const child = f.queue[f.i++];
-          // listed when the parent was visited; the page may have moved it since
-          if (seen.has(child) || dom.parentNode(child) !== f.parent) continue;
-          seen.add(child);
-          const head = serializeNodeHead(child, f.childOptions);
-          if (head) {
-            (f.sn as { childNodes: serializedNodeWithId[] }).childNodes.push(
-              head.serializedNode,
-            );
-            const shadowChild =
-              f.parent !== f.n && isNativeShadowDom(f.parent as ShadowRoot);
-            open(child, head, f.childOptions, shadowChild);
-          }
-          if (!forced && slicer.shouldYield()) return false;
+        const fr = stack[stack.length - 1];
+        if (fr.i >= fr.kids.length) {
+          stack.pop();
           continue;
         }
-        if (!f.shadowStarted) {
-          f.shadowStarted = true;
-          let shadowRootEl: ShadowRoot | null = null;
-          if (isElement(f.n) && (shadowRootEl = dom.shadowRoot(f.n))) {
-            f.queue = Array.from(dom.childNodes(shadowRootEl));
-            f.i = 0;
-            f.parent = shadowRootEl;
-            continue;
-          }
+        const c = fr.kids[fr.i++];
+        const k = fr.k;
+        fr.k = f.end[k];
+        const liveNode = f.live[k];
+        if (!liveNode || liveNode.nodeName !== c.nodeName)
+          throw new Error('rrweb-snapshot: frozen copy out of step');
+        frozenNow = { f, k, live: liveNode, mirror: f.mirror };
+        let head: ReturnType<typeof serializeNodeHead>;
+        try {
+          head = serializeNodeHead(c, fr.childOptions);
+        } finally {
+          frozenNow = null;
         }
-        stack.pop();
-        finish(f.n, f.sn, f.options, f.markShadow);
+        if (head) {
+          (fr.sn as { childNodes: serializedNodeWithId[] }).childNodes.push(head.serializedNode);
+          if (head.serializedNode.type === NodeType.Element) delete head.serializedNode.needBlock;
+          if (
+            head.childOptions &&
+            (head.serializedNode.type === NodeType.Element ||
+              head.serializedNode.type === NodeType.Document)
+          )
+            stack.push({
+              sn: head.serializedNode,
+              childOptions: head.childOptions,
+              kids: head.skipLightChildren ? [] : Array.from(c.childNodes),
+              i: 0,
+              k: k + 1,
+            });
+        }
+        if (!forced && slicer.shouldYield()) return false;
       }
       done = true;
+      walkingFrozen.delete(f);
       return true;
     } catch (err) {
       failed = true;
+      walkingFrozen.delete(f);
       throw err;
     } finally {
       walking = false;
     }
   };
-  open(n, root, rootOptions, false);
   slicer.control?.(() => {
-    if (done) return root.serializedNode;
+    if (done) return root!.serializedNode;
     forced = true;
     if (walking || failed) return null;
-    // the page ran since the last slice, as after any yield
-    recheckBlocked();
     walk();
-    return root.serializedNode;
+    return root!.serializedNode;
   });
-  while (!walk()) {
-    await slicer.yieldSlice();
-    // finishNow() ran while the page had its turn
-    if (done) break;
-    recheckBlocked();
+  try {
+    while (!walk()) {
+      await slicer.yieldSlice();
+      // finishNow() ran while the page had its turn
+      if (done) break;
+    }
+  } finally {
+    walkingFrozen.delete(f);
   }
   return root.serializedNode;
-}
-
-/** Remove every node serialized under `sn` from the mirror (not `sn` itself). */
-function forgetChildren(sn: serializedNodeWithId, mirror: Mirror) {
-  if (sn.type !== NodeType.Document && sn.type !== NodeType.Element) return;
-  for (const child of sn.childNodes) {
-    forgetChildren(child, mirror);
-    const node = mirror.getNode(child.id);
-    if (node) mirror.removeNodeFromMap(node);
-  }
 }
 
 export function visitSnapshot(

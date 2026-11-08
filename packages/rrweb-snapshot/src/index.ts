@@ -14,6 +14,11 @@ import snapshot, {
   genId,
   filterCSSPropertiesFromInlineStyle,
   setAssetHook,
+  setCanvasPixelsHook,
+  applyDeferredAssetHooks,
+  setAssetDeferral,
+  freezeDocument,
+  noteSheetMutation,
 } from './snapshot';
 import rebuild, {
   buildNodeWithSN,
@@ -27,7 +32,12 @@ export * from './types';
 // prefer snapshot-utils.ts / rebuild-utils.ts domain entrypoints.
 export * from './utils';
 
-export type { SnapshotSlicer, SnapshotOptions } from './snapshot';
+export type {
+  SnapshotSlicer,
+  SnapshotOptions,
+  CanvasPixelsHook,
+  FrozenDocument,
+} from './snapshot';
 
 export {
   snapshot,
@@ -52,4 +62,9 @@ export {
   genId,
   filterCSSPropertiesFromInlineStyle,
   setAssetHook,
+  setCanvasPixelsHook,
+  applyDeferredAssetHooks,
+  setAssetDeferral,
+  freezeDocument,
+  noteSheetMutation,
 };

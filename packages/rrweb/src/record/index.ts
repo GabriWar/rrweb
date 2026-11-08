@@ -2,12 +2,17 @@ import {
   snapshot,
   snapshotSliced,
   setAssetHook,
+  setCanvasPixelsHook,
+  applyDeferredAssetHooks,
+  setAssetDeferral,
+  freezeDocument,
+  type FrozenDocument,
   slimDOMDefaults,
   type MaskInputOptions,
   createMirror,
 } from 'rrweb-snapshot';
 import { getIFrameContentWindow } from 'rrdom';
-import { getEventTarget, initObservers, mutationBuffers } from './observer';
+import { initObservers, mutationBuffers } from './observer';
 import {
   flushCoalescedMutations,
   hasCoalescedMutations,
@@ -112,39 +117,6 @@ const mirror = createMirror();
 /** Sliced snapshot (RR-017): wall-time cap after which the rest runs at once. */
 const SLICE_MAX_WALL_MS = 5000;
 let activeSlicing: { cancelled: boolean; finish: () => void } | null = null;
-/**
- * Events whose recorded target must already have a mirror id. While a sliced
- * snapshot runs, a node the walk has not reached yet, or one added under an
- * already visited parent (the mutation buffers are locked), has none, and
- * the observer would record id -1, which the replayer drops. Such an event
- * finishes the snapshot synchronously first (window capture phase, before
- * rrweb's own document listeners), so it gets its real id.
- */
-const SLICE_FINISH_EVENTS = [
-  'pointerdown',
-  'pointerup',
-  'mousedown',
-  'mouseup',
-  'click',
-  'dblclick',
-  'contextmenu',
-  'touchstart',
-  'touchmove',
-  'touchend',
-  'touchcancel',
-  'mousemove',
-  'drag',
-  'focus',
-  'blur',
-  'input',
-  'change',
-  'scroll',
-  'play',
-  'pause',
-  'seeked',
-  'volumechange',
-  'ratechange',
-];
 /** Rejection that ends a sliced snapshot whose recording was stopped. */
 const SLICE_CANCELLED = new Error('rrweb: snapshot cancelled by stop()');
 
@@ -541,8 +513,60 @@ function record<T = eventWithTime>(
     if (!recordDOM) {
       return;
     }
-    if (snapshotSliceMs > 0) {
-      takeFullSnapshotSliced(isCheckout);
+    if (snapshotSliceMs > 0 && takeFullSnapshotSliced(isCheckout)) return;
+    takeFullSnapshotNow(isCheckout);
+  };
+  /** The full snapshot in one synchronous step (or waiting for canvas pixels only). */
+  const takeFullSnapshotNow = (isCheckout = false) => {
+    if (!recordDOM) return;
+    // Panopticon item 8: with canvas frames recorded by the worker, the
+    // snapshot's canvases are captured as ImageBitmaps and encoded there
+    // (same PNG bytes as toDataURL); Meta and FullSnapshot wait for them,
+    // with every event recorded meanwhile queued behind them.
+    const pixels =
+      !slicing && recordCanvas && canvasManager.capturePixels
+        ? { pending: 0, done: null as null | (() => void) }
+        : null;
+    if (pixels) {
+      const meta = {
+        type: EventType.Meta,
+        data: {
+          href: window.location.href,
+          width: getWindowWidth(),
+          height: getWindowHeight(),
+        },
+        timestamp: nowTimestamp(),
+      } as eventWithTime;
+      // values for the asset hook wait for the Meta (dispatchSnapshot)
+      setAssetDeferral(true);
+      const prevHook = setCanvasPixelsHook((canvas, options, fill) => {
+        const taken = canvasManager.capturePixels!(canvas, options, (url) => {
+          fill(url);
+          pixels.pending--;
+          if (pixels.pending === 0) pixels.done?.();
+        });
+        if (taken) pixels.pending++;
+        return taken;
+      });
+      let node: serializedNodeWithId | null;
+      try {
+        node = serializeFullSnapshot();
+      } finally {
+        setCanvasPixelsHook(prevHook);
+      }
+      const full = node
+        ? ({
+            type: EventType.FullSnapshot,
+            data: { node, initialOffset: getWindowScroll(window) },
+            timestamp: nowTimestamp(),
+          } as eventWithTime)
+        : null;
+      if (!pixels.pending) {
+        dispatchSnapshot(meta, full, isCheckout, []);
+        afterSnapshot(node);
+        return;
+      }
+      holdForPixels(meta, full, isCheckout, pixels, node);
       return;
     }
     wrappedEmit(
@@ -597,6 +621,89 @@ function record<T = eventWithTime>(
         document.adoptedStyleSheets,
         mirror.getId(document),
       );
+  };
+  /** The synchronous snapshot with buffers locked, as takeFullSnapshot does it. */
+  const serializeFullSnapshot = (): serializedNodeWithId | null => {
+    stylesheetManager.reset();
+    shadowDomManager.init();
+    canvasManager.lock();
+    mutationBuffers.forEach((buf) => buf.lock());
+    const benchStart =
+      typeof __PANO_BENCH__ !== 'undefined' && __PANO_BENCH__
+        ? performance.now()
+        : 0;
+    const node = snapshot(document, snapshotOptions());
+    if (typeof __PANO_BENCH__ !== 'undefined' && __PANO_BENCH__) {
+      performance.measure('pano:rec:snapshot', {
+        start: benchStart,
+        end: performance.now(),
+      });
+    }
+    return node;
+  };
+  /** Meta + FullSnapshot in one synchronous step, then what queued behind. */
+  const dispatchSnapshot = (
+    meta: eventWithTime,
+    full: eventWithTime | null,
+    isCheckout: boolean,
+    queue: Array<[eventWithTime, boolean | undefined]>,
+  ) => {
+    if (hasCoalescedMutations()) flushCoalescedMutations();
+    dispatch(meta, isCheckout);
+    // after the Meta (which starts a new side table in the recorder),
+    // before the event that carries them
+    applyDeferredAssetHooks();
+    setAssetDeferral(false);
+    if (!full) console.warn('Failed to snapshot the document');
+    else dispatch(full);
+    for (const [e, c] of queue) dispatch(e, c);
+  };
+  /** What the synchronous path does once its FullSnapshot is out. */
+  const afterSnapshot = (node: serializedNodeWithId | null) => {
+    canvasManager.unlock();
+    mutationBuffers.forEach((buf) => buf.unlock());
+    if (
+      node &&
+      document.adoptedStyleSheets &&
+      document.adoptedStyleSheets.length > 0
+    )
+      stylesheetManager.adoptStyleSheets(
+        document.adoptedStyleSheets,
+        mirror.getId(document),
+      );
+  };
+  /**
+   * The snapshot is complete as of its start, only its canvas pixels are
+   * still being encoded: observers run (buffers unlocked, so mutations keep
+   * their own times) and every event is queued until the last pixels land.
+   * flushMutations() (unload) cannot wait for the worker: it sends what is
+   * there, canvases whose pixels are still on their way without them, the
+   * same as a canvas the recorder cannot read. stop() drops the snapshot.
+   */
+  const holdForPixels = (
+    meta: eventWithTime,
+    full: eventWithTime | null,
+    isCheckout: boolean,
+    pixels: { pending: number; done: null | (() => void) },
+    node: serializedNodeWithId | null,
+  ) => {
+    let completed = false;
+    const state: SliceState = {
+      queue: [],
+      cancelled: false,
+      finish: () => complete(),
+    };
+    const complete = () => {
+      if (completed || state.cancelled) return;
+      completed = true;
+      if (slicing === state) slicing = null;
+      if (activeSlicing === state) activeSlicing = null;
+      dispatchSnapshot(meta, full, isCheckout, state.queue);
+    };
+    slicing = state;
+    activeSlicing = state;
+    pixels.done = complete;
+    afterSnapshot(node);
   };
   const snapshotOptions = () => ({
     mirror,
@@ -677,28 +784,30 @@ function record<T = eventWithTime>(
   });
 
   /**
-   * Panopticon RR-017: the full snapshot serialized in slices of at most
-   * snapshotSliceMs, yielding to the page in between, so a large DOM never
-   * blocks the main thread in one long task. Observers are already live and
-   * the mutation buffers locked, as for the synchronous snapshot; events
-   * recorded meanwhile are queued, so the stream is still Meta, FullSnapshot,
-   * the queued events in order, then the mutations buffered while slicing.
-   * The Meta and the FullSnapshot are dispatched together, in one
-   * synchronous step, once the walk is done: a recorder flush between them
-   * would put them in two upload batches, where they can sort FullSnapshot
-   * first (same timestamp) and seeks lose the keyframe. Both carry the
-   * timestamp of the start: the serialized DOM is the page as of the slices,
-   * and every queued event happened after that start.
+   * Panopticon RR-017 / item 8: the full snapshot serialized in slices of at
+   * most snapshotSliceMs, yielding to the page in between, so a large DOM
+   * never blocks the main thread in one long task, and losing nothing: the
+   * page is frozen when the snapshot starts (rrweb-snapshot freezeDocument:
+   * an inert copy plus what a copy does not carry, every id given and every
+   * node in the mirror), the walk serializes the copy, and the observers run
+   * from that instant with the buffers unlocked, so every change after it is
+   * recorded with its own time against those ids. The stream is the
+   * synchronous one: Meta and FullSnapshot as of the start (dispatched
+   * together, in one synchronous step, once the walk and its canvas pixels
+   * are done), then every event recorded meanwhile, in order.
    *
-   * The walk finishes synchronously (same output, no more yields) when
-   * flushMutations() is called (the recorder's unload and buffer-to-session
-   * paths), and when a user event targets a node without a mirror id (see
-   * SLICE_FINISH_EVENTS). stop() still cancels it: a stopped recording reads
-   * no further node (privacy: the page may already be a route that must not
-   * be recorded).
+   * The walk finishes synchronously (same output) when flushMutations() is
+   * called (the recorder's unload and buffer-to-session paths). stop()
+   * cancels it: nothing of it is emitted. Returns false when the page cannot
+   * be frozen (see freezeDocument): the caller takes the synchronous one.
    */
-  const takeFullSnapshotSliced = (isCheckout: boolean, beforeLock?: () => void) => {
-    if (slicing) return; // a checkout asked for mid-slice: this one covers it
+  const takeFullSnapshotSliced = (
+    isCheckout: boolean,
+    beforeLock?: () => void,
+  ): boolean => {
+    if (slicing) return true; // a checkout asked for mid-slice: this one covers it
+    const bench = typeof __PANO_BENCH__ !== 'undefined' && __PANO_BENCH__;
+    const start = performance.now();
     const meta = {
       type: EventType.Meta,
       data: {
@@ -708,6 +817,33 @@ function record<T = eventWithTime>(
       },
       timestamp: nowTimestamp(),
     } as eventWithTime;
+    const initialOffset = getWindowScroll(window);
+    stylesheetManager.reset();
+    shadowDomManager.init();
+    const prevHook = setCanvasPixelsHook(
+      recordCanvas && canvasManager.capturePixels
+        ? (canvas, o, fill) => canvasManager.capturePixels!(canvas, o, fill)
+        : null,
+    );
+    // values for the asset hook wait for the Meta (dispatchSnapshot)
+    setAssetDeferral(true);
+    let frozen: FrozenDocument | null;
+    try {
+      frozen = freezeDocument(document, snapshotOptions());
+    } catch (err) {
+      setAssetDeferral(false);
+      throw err;
+    } finally {
+      setCanvasPixelsHook(prevHook);
+    }
+    if (!frozen) {
+      setAssetDeferral(false);
+      return false;
+    }
+    const f = frozen;
+    beforeLock?.();
+
+    let node: serializedNodeWithId | null | undefined;
     let finishNow: (() => serializedNodeWithId | null) | undefined;
     let completed = false;
     const state: SliceState = {
@@ -715,29 +851,12 @@ function record<T = eventWithTime>(
       cancelled: false,
       finish: () => {
         if (completed || state.cancelled) return;
-        const node = finishNow?.();
-        if (node) complete(node);
+        if (node === undefined) node = finishNow?.() ?? null;
+        complete();
       },
     };
     slicing = state;
     activeSlicing = state;
-    const onUserEvent = (event: Event) => {
-      const target = getEventTarget(event);
-      if (target && !mirror.hasNode(target as Node)) state.finish();
-    };
-    const listenerOptions = { capture: true, passive: true };
-    SLICE_FINISH_EVENTS.forEach((type) =>
-      window.addEventListener(type, onUserEvent, listenerOptions),
-    );
-
-    stylesheetManager.reset();
-    shadowDomManager.init();
-    beforeLock?.();
-    canvasManager.lock();
-    mutationBuffers.forEach((buf) => buf.lock());
-
-    const bench = typeof __PANO_BENCH__ !== 'undefined' && __PANO_BENCH__;
-    const start = performance.now();
     let sliceStart = start;
     const endSlice = () => {
       if (bench)
@@ -746,12 +865,9 @@ function record<T = eventWithTime>(
           end: performance.now(),
         });
     };
-    const complete = (node: serializedNodeWithId | null) => {
+    const complete = () => {
       if (completed) return;
       completed = true;
-      SLICE_FINISH_EVENTS.forEach((type) =>
-        window.removeEventListener(type, onUserEvent, listenerOptions),
-      );
       endSlice();
       if (bench)
         performance.measure('pano:rec:snapshot-wall', {
@@ -760,62 +876,68 @@ function record<T = eventWithTime>(
         });
       if (slicing === state) slicing = null;
       if (activeSlicing === state) activeSlicing = null;
-      if (state.cancelled) return;
-      dispatch(meta, isCheckout);
-      if (!node) {
-        console.warn('Failed to snapshot the document');
-      } else {
-        dispatch({
-          type: EventType.FullSnapshot,
-          data: { node, initialOffset: getWindowScroll(window) },
-          timestamp: meta.timestamp,
-        } as eventWithTime);
+      if (state.cancelled) {
+        setAssetDeferral(false);
+        return;
       }
-      for (const [e, c] of state.queue) dispatch(e, c);
-      canvasManager.unlock();
-      mutationBuffers.forEach((buf) => buf.unlock());
-      if (
-        node &&
-        document.adoptedStyleSheets &&
-        document.adoptedStyleSheets.length > 0
-      )
-        stylesheetManager.adoptStyleSheets(
-          document.adoptedStyleSheets,
-          mirror.getId(document),
-        );
+      dispatchSnapshot(
+        meta,
+        node
+          ? ({
+              type: EventType.FullSnapshot,
+              data: { node, initialOffset },
+              timestamp: meta.timestamp,
+            } as eventWithTime)
+          : null,
+        isCheckout,
+        state.queue,
+      );
     };
-    void snapshotSliced(document, snapshotOptions(), {
-      // Starvation guard: past 5 s of wall time the rest runs in one go.
-      // A stopped recording ends the walk at the next node instead.
-      shouldYield: () => {
-        if (state.cancelled) return true;
-        const now = performance.now();
-        return (
-          now - sliceStart >= snapshotSliceMs && now - start < SLICE_MAX_WALL_MS
-        );
+    f.onPixels = () => {
+      if (node !== undefined) complete();
+    };
+    void snapshotSliced(
+      document,
+      snapshotOptions(),
+      {
+        // Starvation guard: past 5 s of wall time the rest runs in one go.
+        // A stopped recording ends the walk at the next node instead.
+        shouldYield: () => {
+          if (state.cancelled) return true;
+          const now = performance.now();
+          return (
+            now - sliceStart >= snapshotSliceMs &&
+            now - start < SLICE_MAX_WALL_MS
+          );
+        },
+        yieldSlice: () => {
+          endSlice();
+          if (state.cancelled) return Promise.reject(SLICE_CANCELLED);
+          return yieldToPage().then(() => {
+            // stop() ran while the page had its turn: not one more node
+            if (state.cancelled) throw SLICE_CANCELLED;
+            sliceStart = performance.now();
+          });
+        },
+        control: (fn) => {
+          finishNow = fn;
+        },
       },
-      yieldSlice: () => {
-        endSlice();
-        if (state.cancelled) return Promise.reject(SLICE_CANCELLED);
-        return yieldToPage().then(() => {
-          // stop() ran while the page had its turn: not one more node
-          if (state.cancelled) throw SLICE_CANCELLED;
-          sliceStart = performance.now();
-        });
-      },
-      control: (f) => {
-        finishNow = f;
-      },
-    })
+      f,
+    )
       .catch((err) => {
         if (err !== SLICE_CANCELLED) console.warn(err);
         return null;
       })
-      .then((node) => {
+      .then((n) => {
         // finished synchronously already: the rejected yield is moot
-        if (completed) return;
-        complete(node);
+        if (completed || node !== undefined) return;
+        node = n;
+        if (state.cancelled) return complete();
+        if (f.pending === 0) complete();
+        else endSlice(); // the pixels are still on their way
       });
+    return true;
   };
   _takeFullSnapshot = takeFullSnapshot;
 
@@ -986,12 +1108,15 @@ function record<T = eventWithTime>(
     });
 
     const init = () => {
-      if (snapshotSliceMs > 0 && recordDOM) {
-        // sliced: the page runs during the snapshot, so observers go first
-        takeFullSnapshotSliced(false, () => handlers.push(observe(document)));
+      if (
+        snapshotSliceMs > 0 &&
+        recordDOM &&
+        // sliced: the page runs during the snapshot, so observers start
+        // right after the freeze
+        takeFullSnapshotSliced(false, () => handlers.push(observe(document)))
+      )
         return;
-      }
-      takeFullSnapshot();
+      takeFullSnapshotNow();
       handlers.push(observe(document));
     };
     if (['interactive', 'complete'].includes(document.readyState)) {
@@ -1033,6 +1158,7 @@ function record<T = eventWithTime>(
       setMutationCoalescing(false);
       stopped = true;
       setAssetHook(null);
+      setAssetDeferral(false, true);
       [...handlers, ...iframeObservers.values()].forEach((handler) => {
         try {
           handler();

@@ -41,6 +41,16 @@ export interface CanvasManagerInterface {
   addWindow(win: IWindow): void;
   addShadowRoot(shadowRoot: ShadowRoot): void;
   resetShadowRoots(): void;
+  /**
+   * Panopticon item 8: take a full snapshot canvas's pixels off the main
+   * thread (rrweb-snapshot CanvasPixelsHook). Returns false when this
+   * manager cannot (no worker): the snapshot then reads them itself.
+   */
+  capturePixels?(
+    canvas: HTMLCanvasElement,
+    dataURLOptions: DataURLOptions,
+    fill: (dataURL: string | null) => void,
+  ): boolean;
 }
 
 export interface CanvasManagerConstructorOptions {
@@ -107,6 +117,9 @@ export class CanvasManager implements CanvasManagerInterface {
 
   private snapshotInProgressMap: Map<number, boolean> = new Map();
   private worker: Worker | null = null;
+  /** Full snapshot pixel requests waiting for the worker, by token. */
+  private pixelRequests = new Map<number, (dataURL: string | null) => void>();
+  private pixelToken = 0;
 
   private lastSnapshotTime = 0;
 
@@ -126,6 +139,38 @@ export class CanvasManager implements CanvasManagerInterface {
     this.worker?.terminate();
     this.worker = null;
     this.snapshotInProgressMap = new Map();
+    this.pixelRequests.clear();
+  }
+
+  public capturePixels(
+    canvas: HTMLCanvasElement,
+    dataURLOptions: DataURLOptions,
+    fill: (dataURL: string | null) => void,
+  ): boolean {
+    const worker = this.worker;
+    if (!worker || !canvas.width || !canvas.height) return false;
+    const token = ++this.pixelToken;
+    const { width, height } = canvas;
+    this.pixelRequests.set(token, fill);
+    // the ImageBitmap is the canvas as of this call; encoding happens in
+    // the worker, which answers in order with the frames
+    createImageBitmap(canvas)
+      .then((bitmap) => {
+        if (this.worker !== worker) return bitmap.close();
+        worker.postMessage(
+          { id: -1, initial: token, bitmap, width, height, dataURLOptions },
+          [bitmap],
+        );
+      })
+      .catch(() => this.answerPixels(token, null));
+    return true;
+  }
+
+  private answerPixels(token: number, dataURL: string | null) {
+    const fill = this.pixelRequests.get(token);
+    if (!fill) return;
+    this.pixelRequests.delete(token);
+    fill(dataURL);
   }
 
   public freeze() {
@@ -270,12 +315,23 @@ export class CanvasManager implements CanvasManagerInterface {
 
   private onWorkerFrame(e: MessageEvent) {
     const data = e.data as ImageBitmapDataURLWorkerResponse;
+    if (data.initial !== undefined) {
+      this.answerPixels(
+        data.initial,
+        'base64' in data ? `data:${data.type};base64,${data.base64}` : null,
+      );
+      return;
+    }
     const { id } = data;
     this.snapshotInProgressMap.set(id, false);
 
     if (!('base64' in data)) return;
+    this.emitFrame(data);
+  }
 
-    const { base64, type, width, height } = data;
+  private emitFrame(data: ImageBitmapDataURLWorkerResponse) {
+    if (!('base64' in data)) return;
+    const { id, base64, type, width, height } = data;
     this.mutationCb({
       id,
       type: CanvasContext['2D'],

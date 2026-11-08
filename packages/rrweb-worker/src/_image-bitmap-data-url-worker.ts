@@ -50,6 +50,33 @@ const worker: ImageBitmapDataURLResponseWorker = self;
 
 // eslint-disable-next-line @typescript-eslint/no-misused-promises
 worker.onmessage = async function (e) {
+  if ('OffscreenCanvas' in globalThis && e.data.initial !== undefined) {
+    // Panopticon item 8: a full snapshot's pixels, the bytes toDataURL()
+    // gives (same encoder, full size), or none for a blank canvas, as the
+    // synchronous snapshot decides. Frame dedup (lastBlobMap) untouched.
+    const { id, initial, bitmap, width, height, dataURLOptions } = e.data;
+    try {
+      const offscreen = new OffscreenCanvas(width, height);
+      offscreen.getContext('bitmaprenderer')?.transferFromImageBitmap(bitmap);
+      const blob = await offscreen.convertToBlob(dataURLOptions);
+      const base64 = encode(await blob.arrayBuffer());
+      if (
+        base64 === (await getTransparentBlobFor(width, height, dataURLOptions))
+      )
+        return worker.postMessage({ id, initial });
+      return worker.postMessage({
+        id,
+        initial,
+        type: blob.type,
+        base64,
+        width,
+        height,
+      });
+    } catch {
+      bitmap.close();
+      return worker.postMessage({ id, initial });
+    }
+  }
   if ('OffscreenCanvas' in globalThis) {
     const { id, bitmap, width, height, maxCanvasSize, dataURLOptions } = e.data;
 
@@ -104,6 +131,6 @@ worker.onmessage = async function (e) {
     });
     lastBlobMap.set(id, base64);
   } else {
-    return worker.postMessage({ id: e.data.id });
+    return worker.postMessage({ id: e.data.id, initial: e.data.initial });
   }
 };

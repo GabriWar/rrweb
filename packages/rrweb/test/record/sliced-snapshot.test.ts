@@ -1,9 +1,9 @@
 /**
- * Panopticon RR-017: record({ snapshotSliceMs }) serializes the full snapshot
- * in slices; events recorded meanwhile are queued, so the stream is Meta,
- * FullSnapshot, queued events in order, then the mutations buffered while
- * slicing. A page that does not change gets the same FullSnapshot as the
- * synchronous path.
+ * Panopticon RR-017 / item 8: record({ snapshotSliceMs }) freezes the page
+ * when the snapshot starts and serializes the frozen copy in slices; events
+ * recorded meanwhile (mutations with their own times) are queued, so the
+ * stream is Meta, FullSnapshot, then every queued event in order, and the
+ * FullSnapshot is the synchronous path's.
  * Run: npx vitest run --config vitest.panopticon.config.ts
  */
 import { describe, expect, it } from 'vitest';
@@ -78,17 +78,27 @@ describe('sliced full snapshot (RR-017)', () => {
     expect(json.match(/added while slicing/g)?.length ?? 0).toBeGreaterThanOrEqual(1);
   });
 
-  it('stop() mid-snapshot: no event of any kind afterwards and the walk reads no further node (privacy fix 3)', async () => {
+  it('stop() mid-snapshot: no event of any kind afterwards and the walk serializes no further node (privacy fix 3)', async () => {
     page(3000);
     document.body.insertAdjacentHTML('beforeend', '<iframe id="f"></iframe>');
     const events: eventWithTime[] = [];
-    const stop = record({ emit: (e) => events.push(e as eventWithTime), snapshotSliceMs: 0.001 })!;
-    // let a few slices run, then stop while the walk is suspended
+    let serializedAfterStop = false;
+    let stopped = false;
+    const stop = record({
+      emit: (e) => events.push(e as eventWithTime),
+      snapshotSliceMs: 0.001,
+      // the asset hook runs for every serialized element with a large value:
+      // none may be serialized after stop()
+      assetHook: () => {
+        if (stopped) serializedAfterStop = true;
+        return null;
+      },
+    })!;
+    // every node got its id when the snapshot started (the freeze)
+    expect(record.mirror.getIds().length).toBeGreaterThan(3000);
     for (let i = 0; i < 3; i++) await new Promise((r) => setTimeout(r, 0));
-    const walked = record.mirror.getIds().length;
-    expect(walked).toBeGreaterThan(0);
-    expect(walked).toBeLessThan(3000);
     stop();
+    stopped = true;
     const atStop = events.length;
     // the page keeps changing and interacting after stop()
     const li = document.createElement('li');
@@ -98,13 +108,12 @@ describe('sliced full snapshot (RR-017)', () => {
     document.getElementById('f')!.dispatchEvent(new Event('load'));
     await settle(200);
     expect(events.length).toBe(atStop);
-    expect(events.some((e) => e.type === EventType.FullSnapshot)).toBe(false);
-    // the walk ended at the yield it was suspended in
-    expect(record.mirror.getIds().length).toBe(walked);
+    expect(events.length).toBe(0);
+    expect(serializedAfterStop).toBe(false);
     expect(() => record.takeFullSnapshot()).toThrow();
   });
 
-  it('the Meta is dispatched with the FullSnapshot, in one synchronous step', async () => {
+  it('the Meta is dispatched with the FullSnapshot, in one synchronous step', { timeout: 25_000 }, async () => {
     page(3000);
     const events: eventWithTime[] = [];
     let ticks = 0;
@@ -154,23 +163,31 @@ describe('sliced full snapshot (RR-017)', () => {
     expect(events.filter((e) => e.type === EventType.FullSnapshot).length).toBe(1);
   });
 
-  it('a click on a node added mid-snapshot, or not walked yet, is recorded with its real id', async () => {
+  it('a click on a node added mid-snapshot, or not walked yet, is recorded with its real id, after the FullSnapshot', async () => {
     page(3000);
     const events: eventWithTime[] = [];
     const stop = record({ emit: (e) => events.push(e as eventWithTime), snapshotSliceMs: 0.001 })!;
     for (let i = 0; i < 3; i++) await new Promise((r) => setTimeout(r, 0));
     expect(events.length).toBe(0);
-    // body was visited already: this button is only in the locked mutation buffer
+    // added after the freeze: the mutation buffer gives it its id now
     const late = document.createElement('button');
     late.textContent = 'cookie banner: accept';
     document.body.appendChild(late);
     // a user's click is a later task: the MutationObserver has delivered by then
     await Promise.resolve();
     late.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: 3, clientY: 4 }));
-    // the last list item: not reached by the walk yet
+    // the last list item: not reached by the walk yet, its id given at the freeze
     const items = document.querySelectorAll('#l li');
     const deep = items[items.length - 1] as HTMLElement;
+    const deepId = record.mirror.getId(deep);
+    expect(deepId).toBeGreaterThan(0);
     deep.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: 5, clientY: 6 }));
+    // the walk carries on: nothing out until it is done
+    expect(events.length).toBe(0);
+    const deadline = Date.now() + 20_000;
+    while (!events.some((e) => e.type === EventType.FullSnapshot) && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
     stop();
     const clicks = events.filter(
       (e) =>
@@ -179,7 +196,10 @@ describe('sliced full snapshot (RR-017)', () => {
         (e.data as { type: number }).type === 2,
     ) as Array<eventWithTime & { data: { id: number } }>;
     expect(clicks.length).toBe(2);
-    expect(clicks.every((c) => c.data.id > 0)).toBe(true);
+    expect(clicks[1].data.id).toBe(deepId);
+    const full = JSON.stringify(events.find((e) => e.type === EventType.FullSnapshot)!.data);
+    expect(full).toContain(`"id":${deepId}}`);
+    expect(full).not.toContain('cookie banner');
     // the added button's id comes from the mutation emitted right before its click
     const add = events.find(
       (e) =>
@@ -191,19 +211,14 @@ describe('sliced full snapshot (RR-017)', () => {
     expect(events.indexOf(add!)).toBeLessThan(events.indexOf(clicks[0]));
     expect(add!.data.adds.some((a) => a.node.id === clicks[0].data.id && a.node.tagName === 'button')).toBe(true);
     expect(events.map(kind).slice(0, 2)).toEqual(['4', '2']);
-  });
+  }, 25_000);
 
   it('a click on a node the walk already serialized does not end the slicing', async () => {
     page(3000);
     const events: eventWithTime[] = [];
     const stop = record({ emit: (e) => events.push(e as eventWithTime), snapshotSliceMs: 0.001 })!;
     const b = document.getElementById('b')!;
-    // wait until the walk has serialized #b (slices hop through MessageChannel,
-    // so a fixed number of timer ticks raced it under load), but not finished
-    const walked = Date.now() + 10_000;
-    while (!record.mirror.hasNode(b) && Date.now() < walked) {
-      await new Promise((r) => setTimeout(r, 0));
-    }
+    for (let i = 0; i < 3; i++) await new Promise((r) => setTimeout(r, 0));
     expect(record.mirror.hasNode(b)).toBe(true);
     b.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     expect(events.some((e) => e.type === EventType.FullSnapshot)).toBe(false);

@@ -6,6 +6,7 @@ import {
   shouldMaskInput,
   toLowerCase,
   needMaskingText,
+  noteSheetMutation,
   toUpperCase,
 } from 'rrweb-snapshot';
 import type { FontFaceSet } from 'css-font-loading-module';
@@ -659,6 +660,8 @@ function initStyleSheetObserver(
         thisArg: CSSStyleSheet,
         argumentsList: [string, number | undefined],
       ) => {
+        // a sliced snapshot still to serialize this sheet reads it first
+        noteSheetMutation(thisArg);
         const [rule, index] = argumentsList;
 
         const { id, styleId } = getIdAndStyleId(
@@ -699,6 +702,8 @@ function initStyleSheetObserver(
         thisArg: CSSStyleSheet,
         argumentsList: [number],
       ) => {
+        // a sliced snapshot still to serialize this sheet reads it first
+        noteSheetMutation(thisArg);
         const [index] = argumentsList;
 
         const { id, styleId } = getIdAndStyleId(
@@ -739,6 +744,8 @@ function initStyleSheetObserver(
           thisArg: CSSStyleSheet,
           argumentsList: [string],
         ) => {
+          // a sliced snapshot still to serialize this sheet reads it first
+          noteSheetMutation(thisArg);
           const [text] = argumentsList;
 
           const { id, styleId } = getIdAndStyleId(
@@ -771,6 +778,8 @@ function initStyleSheetObserver(
           thisArg: CSSStyleSheet,
           argumentsList: [string],
         ) => {
+          // a sliced snapshot still to serialize this sheet reads it first
+          noteSheetMutation(thisArg);
           const [text] = argumentsList;
 
           const { id, styleId } = getIdAndStyleId(
@@ -837,6 +846,8 @@ function initStyleSheetObserver(
             thisArg: CSSRule,
             argumentsList: [string, number | undefined],
           ) => {
+            // a sliced snapshot still to serialize this sheet reads it first
+            noteSheetMutation(thisArg.parentStyleSheet);
             const [rule, index] = argumentsList;
 
             const { id, styleId } = getIdAndStyleId(
@@ -875,6 +886,8 @@ function initStyleSheetObserver(
             thisArg: CSSRule,
             argumentsList: [number],
           ) => {
+            // a sliced snapshot still to serialize this sheet reads it first
+            noteSheetMutation(thisArg.parentStyleSheet);
             const [index] = argumentsList;
 
             const { id, styleId } = getIdAndStyleId(
@@ -994,6 +1007,8 @@ function initStyleDeclarationObserver(
         thisArg: CSSStyleDeclaration,
         argumentsList: [string, string, string],
       ) => {
+        // a sliced snapshot still to serialize this sheet reads it first
+        noteSheetMutation(thisArg.parentRule?.parentStyleSheet);
         const [property, value, priority] = argumentsList;
 
         // ignore this mutation if we do not care about this css attribute
@@ -1032,6 +1047,8 @@ function initStyleDeclarationObserver(
         thisArg: CSSStyleDeclaration,
         argumentsList: [string],
       ) => {
+        // a sliced snapshot still to serialize this sheet reads it first
+        noteSheetMutation(thisArg.parentRule?.parentStyleSheet);
         const [property] = argumentsList;
 
         // ignore this mutation if we do not care about this css attribute

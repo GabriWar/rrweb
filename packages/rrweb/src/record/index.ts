@@ -697,7 +697,10 @@ function record<T = eventWithTime>(
    * no further node (privacy: the page may already be a route that must not
    * be recorded).
    */
-  const takeFullSnapshotSliced = (isCheckout: boolean, beforeLock?: () => void) => {
+  const takeFullSnapshotSliced = (
+    isCheckout: boolean,
+    beforeLock?: () => void,
+  ) => {
     if (slicing) return; // a checkout asked for mid-slice: this one covers it
     const meta = {
       type: EventType.Meta,

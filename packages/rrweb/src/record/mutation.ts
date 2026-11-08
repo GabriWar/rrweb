@@ -39,10 +39,7 @@ import {
 import dom from '@rrweb/utils';
 import { StyleDeclarationParser } from './style-declaration-parser';
 
-import {
-  getIFrameContentDocument,
-  getIFrameContentWindow,
-} from 'rrdom';
+import { getIFrameContentDocument, getIFrameContentWindow } from 'rrdom';
 
 const moveKey = (id: number, parentId: number) => `${id}@${parentId}`;
 
@@ -611,7 +608,6 @@ export default class MutationBuffer {
       maskInputFn: this.maskInputFn,
     });
   };
-
 
   private processMutation = (m: mutationRecord) => {
     if (isIgnored(m.target, this.mirror, this.slimDOMOptions)) {

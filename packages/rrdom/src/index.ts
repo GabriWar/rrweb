@@ -1,12 +1,7 @@
 import { createMirror as createNodeMirror } from 'rrweb-snapshot';
 import type { Mirror as NodeMirror } from 'rrweb-snapshot';
-import {
-  NodeType as RRNodeType,
-} from '@rrweb/types';
-import type {
-  IMirror,
-  serializedNodeWithId,
-} from '@rrweb/types';
+import { NodeType as RRNodeType } from '@rrweb/types';
+import type { IMirror, serializedNodeWithId } from '@rrweb/types';
 import type {
   canvasMutationData,
   canvasEventWithTime,

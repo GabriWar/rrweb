@@ -70,7 +70,10 @@ describe('coalesceMutations (RR-016)', () => {
     ).adds;
     expect(adds.filter((a) => a.node.tagName === 'span')).toHaveLength(3);
     expect(
-      adds.map((a) => a.node.textContent).filter(Boolean).sort(),
+      adds
+        .map((a) => a.node.textContent)
+        .filter(Boolean)
+        .sort(),
     ).toEqual(['n0', 'n1', 'n2']);
     stop();
   });
@@ -82,7 +85,9 @@ describe('coalesceMutations (RR-016)', () => {
     await Promise.resolve();
     document
       .getElementById('b')!
-      .dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: 1, clientY: 1 }));
+      .dispatchEvent(
+        new MouseEvent('click', { bubbles: true, clientX: 1, clientY: 1 }),
+      );
     expect(kinds(events)).toEqual([
       IncrementalSource.Mutation,
       IncrementalSource.MouseInteraction,

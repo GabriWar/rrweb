@@ -365,7 +365,8 @@ export async function assertSnapshot(
     typeof optionsOrOwnFile === 'object'
       ? optionsOrOwnFile
       : { includeScroll: false };
-  let useOwnFile = typeof optionsOrOwnFile === 'object' ? false : optionsOrOwnFile;
+  let useOwnFile =
+    typeof optionsOrOwnFile === 'object' ? false : optionsOrOwnFile;
 
   if (useOwnFile) {
     // e.g. 'mutation.test.ts > mutation > add elements at once'

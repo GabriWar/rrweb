@@ -26,17 +26,44 @@ const node = {
   ],
 };
 const events = [
-  { timestamp: 1000, type: EventType.Meta, data: { href: 'http://x/', width: 1280, height: 800 } },
-  { timestamp: 1000, type: EventType.FullSnapshot, data: { node, initialOffset: { top: 0, left: 0 } } },
-  { timestamp: 2000, type: EventType.IncrementalSnapshot, data: { source: IncrementalSource.ViewportResize, width: 1024, height: 768 } },
-  { timestamp: 3000, type: EventType.IncrementalSnapshot, data: { source: IncrementalSource.MouseMove, positions: [{ x: 1, y: 1, id: 4, timeOffset: 0 }] } },
+  {
+    timestamp: 1000,
+    type: EventType.Meta,
+    data: { href: 'http://x/', width: 1280, height: 800 },
+  },
+  {
+    timestamp: 1000,
+    type: EventType.FullSnapshot,
+    data: { node, initialOffset: { top: 0, left: 0 } },
+  },
+  {
+    timestamp: 2000,
+    type: EventType.IncrementalSnapshot,
+    data: {
+      source: IncrementalSource.ViewportResize,
+      width: 1024,
+      height: 768,
+    },
+  },
+  {
+    timestamp: 3000,
+    type: EventType.IncrementalSnapshot,
+    data: {
+      source: IncrementalSource.MouseMove,
+      positions: [{ x: 1, y: 1, id: 4, timeOffset: 0 }],
+    },
+  },
 ] as unknown as eventWithTime[];
 
 describe('poster resize after an immediate seek (Panopticon RR-052)', () => {
   it('keeps the size the seek applied', async () => {
     const root = document.createElement('div');
     document.body.appendChild(root);
-    const r = new Replayer(events, { root, showWarning: false, mouseTail: false });
+    const r = new Replayer(events, {
+      root,
+      showWarning: false,
+      mouseTail: false,
+    });
     // offsets count from the first event: 500 is before the resize, 1500 after
     r.pause(500);
     expect(r.iframe.getAttribute('width')).toBe('1280');
@@ -50,7 +77,11 @@ describe('poster resize after an immediate seek (Panopticon RR-052)', () => {
   it('still sizes the poster when nothing was played', async () => {
     const root = document.createElement('div');
     document.body.appendChild(root);
-    const r = new Replayer(events, { root, showWarning: false, mouseTail: false });
+    const r = new Replayer(events, {
+      root,
+      showWarning: false,
+      mouseTail: false,
+    });
     await new Promise((res) => setTimeout(res, 20));
     expect(r.iframe.getAttribute('width')).toBe('1280');
     r.destroy();

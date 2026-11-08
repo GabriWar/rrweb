@@ -28,10 +28,7 @@ import {
   handleInsertBefore,
 } from '../src/diff';
 import type { IRRElement, IRRNode } from '../src/document';
-import type {
-  canvasMutationData,
-  styleSheetRuleData,
-} from '@rrweb/types';
+import type { canvasMutationData, styleSheetRuleData } from '@rrweb/types';
 import { EventType, IncrementalSource } from '@rrweb/types';
 
 const elementSn = {

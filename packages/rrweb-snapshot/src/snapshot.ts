@@ -2234,9 +2234,38 @@ function frozenSheetText(f: FrozenDocument, sheet: CSSStyleSheet): string | null
   return t !== undefined ? t || null : stringifyStylesheet(sheet);
 }
 
-/** Selectors a copy cannot match as the live page does (element state). */
-const STATEFUL_SELECTOR =
-  /:(?:hover|active|focus|target|defined|fullscreen|modal|popover-open|open|playing|paused|seeking|buffering|stalled|muted|volume-locked|picture-in-picture|state|host|scope|root|autofill|-webkit-autofill|user-valid|user-invalid|current|past|future|visited|has-slotted|local-link)/i;
+/**
+ * Pseudo-classes a copy matches exactly as the live page does: they read the
+ * tree and attributes only. Any other pseudo-class or pseudo-element in a
+ * privacy selector (element state such as :hover, :checked on an <option>,
+ * :indeterminate, custom states, :root on a detached copy, or anything not
+ * known here) makes the freeze give up, so the synchronous snapshot decides
+ * block and mask on the live page. Fails closed: a token this cannot read
+ * (an escape, a ':' inside an attribute value) also gives up.
+ */
+const COPY_SAFE_PSEUDO = new Set([
+  'is',
+  'where',
+  'not',
+  'has',
+  'nth-child',
+  'nth-last-child',
+  'nth-of-type',
+  'nth-last-of-type',
+  'first-child',
+  'last-child',
+  'only-child',
+  'first-of-type',
+  'last-of-type',
+  'only-of-type',
+  'empty',
+]);
+
+export function selectorMatchesOnCopy(sel: string): boolean {
+  for (const m of sel.matchAll(/:(:?)([-\w]*)/g))
+    if (m[1] || !COPY_SAFE_PSEUDO.has(m[2].toLowerCase())) return false;
+  return true;
+}
 
 const FROZEN_ABORT = new Error('rrweb-snapshot: page cannot be frozen');
 
@@ -2252,7 +2281,7 @@ export function freezeDocument(
     o.maskTextSelector,
     o.unmaskTextSelector,
   ])
-    if (sel && STATEFUL_SELECTOR.test(sel)) return null;
+    if (sel && !selectorMatchesOnCopy(sel)) return null;
   if (n.adoptedStyleSheets && n.adoptedStyleSheets.length) return null;
   const slim = o.slimDOMOptions;
   // node kinds: 0 no id (skipped), 1 id, 2 ignored (IGNORED_NODE)

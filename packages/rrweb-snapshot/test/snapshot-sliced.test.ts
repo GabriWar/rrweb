@@ -11,7 +11,9 @@ import { JSDOM } from 'jsdom';
 import { describe, expect, it } from 'vitest';
 import snapshot, {
   cleanupSnapshot,
+  freezeDocument,
   noteSheetMutation,
+  selectorMatchesOnCopy,
   snapshotSliced,
 } from '../src/snapshot';
 import type { SnapshotSlicer } from '../src/snapshot';
@@ -264,5 +266,37 @@ describe('snapshotSliced (RR-017)', () => {
     });
     expect(calls).toBe(5);
     expect(json).toBe(expected);
+  });
+});
+
+describe('freeze privacy selectors (fail closed)', () => {
+  it('only structural pseudo-classes let a copy decide block / mask', () => {
+    for (const sel of ['.mask', '[data-block]', 'ul > li:nth-child(2n+1)', 'div:not(.x):has(> p:first-child)', 'p:empty'])
+      expect(selectorMatchesOnCopy(sel), sel).toBe(true);
+    for (const sel of [
+      'input:checked',
+      'option:checked ~ .x',
+      'input:indeterminate',
+      'input:placeholder-shown',
+      'input:invalid',
+      'x-el:state(open)',
+      'x-el:--open',
+      ':root .secret',
+      'p::first-line',
+      'a:HOVER',
+      'a:hov\\65r',
+      '[data-k="a:b"]',
+      'div:has(input:checked)',
+      ':focus-within .x',
+    ])
+      expect(selectorMatchesOnCopy(sel), sel).toBe(false);
+  });
+
+  it('a state-dependent mask or block selector makes freezeDocument give up', () => {
+    const { window } = new JSDOM('<p class="mask">a</p><input type="checkbox">');
+    const doc = window.document;
+    expect(freezeDocument(doc, { mirror: new Mirror(), maskTextSelector: 'body:has(input:indeterminate) p' })).toBeNull();
+    expect(freezeDocument(doc, { mirror: new Mirror(), blockSelector: 'option:checked' })).toBeNull();
+    expect(freezeDocument(doc, { mirror: new Mirror(), maskTextSelector: '.mask' })).not.toBeNull();
   });
 });

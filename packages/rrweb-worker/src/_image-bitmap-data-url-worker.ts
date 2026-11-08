@@ -48,8 +48,9 @@ async function getTransparentBlobFor(
 // `as any` because: https://github.com/Microsoft/TypeScript/issues/20595
 const worker: ImageBitmapDataURLResponseWorker = self;
 
-// eslint-disable-next-line @typescript-eslint/no-misused-promises
-worker.onmessage = async function (e) {
+const handle = async function (
+  e: MessageEvent<ImageBitmapDataURLWorkerParams>,
+) {
   if ('OffscreenCanvas' in globalThis && e.data.initial !== undefined) {
     // Panopticon item 8: a full snapshot's pixels, the bytes toDataURL()
     // gives (same encoder, full size), or none for a blank canvas, as the
@@ -114,6 +115,20 @@ worker.onmessage = async function (e) {
     const base64 = encode(arrayBuffer); // cpu intensive
     resizedBitmap.close();
 
+    if (e.data.seq !== undefined) {
+      // Panopticon item 8: one of several workers; the canvas manager keeps
+      // the order and drops exact repeats
+      return worker.postMessage({
+        id,
+        seq: e.data.seq,
+        transparent: (await transparentBase64) === base64,
+        type,
+        base64,
+        width,
+        height,
+      });
+    }
+
     // on first try we should check if canvas is transparent,
     // no need to save it's contents in that case
     if (!lastBlobMap.has(id) && (await transparentBase64) === base64) {
@@ -131,6 +146,13 @@ worker.onmessage = async function (e) {
     });
     lastBlobMap.set(id, base64);
   } else {
-    return worker.postMessage({ id: e.data.id, initial: e.data.initial });
+    return worker.postMessage({ id: e.data.id, seq: e.data.seq, initial: e.data.initial });
   }
+};
+
+worker.onmessage = (e) => {
+  // a failed frame still answers, so the canvas manager's order moves on
+  handle(e).catch(() => {
+    worker.postMessage({ id: e.data.id, seq: e.data.seq, initial: e.data.initial });
+  });
 };

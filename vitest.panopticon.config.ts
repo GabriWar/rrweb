@@ -35,6 +35,7 @@ export default defineConfig({
       'packages/rrweb/test/record/sliced-snapshot.test.ts',
       'packages/rrweb/test/record/loss-audit.test.ts',
       'packages/rrweb/test/record/canvas-pixels.test.ts',
+      'packages/rrweb/test/record/canvas-frames.test.ts',
       'packages/rrweb-snapshot/test/snapshot-sliced.test.ts',
       'packages/rrweb-snapshot/test/mask-fast-path.test.ts',
       'packages/rrweb-snapshot/test/asset-hook.test.ts',

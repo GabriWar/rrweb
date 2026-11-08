@@ -617,16 +617,26 @@ export type ImageBitmapDataURLWorkerParams = {
    * the canvas is left alone.
    */
   initial?: number;
+  /**
+   * Panopticon item 8: frame sequence number of the canvas. The worker then
+   * answers every frame with its pixels (frames are spread over several
+   * workers, so dedup and ordering are the canvas manager's).
+   */
+  seq?: number;
 };
 
 export type ImageBitmapDataURLWorkerResponse =
   | {
       id: number;
       initial?: number;
+      seq?: number;
     }
   | {
       id: number;
       initial?: number;
+      seq?: number;
+      /** the frame equals a transparent canvas of its size */
+      transparent?: boolean;
       type: string;
       base64: string;
       width: number;

@@ -117,6 +117,23 @@ export class CanvasManager implements CanvasManagerInterface {
 
   private snapshotInProgressMap: Map<number, boolean> = new Map();
   private worker: Worker | null = null;
+  /**
+   * Panopticon item 8: every animation frame is captured (no frame skipped
+   * while an earlier one is still being encoded). Frames are spread over a
+   * small pool of workers; per canvas they are emitted in capture order and
+   * a frame is dropped only when its PNG equals the previous one's exactly.
+   */
+  private pool: Worker[] = [];
+  private poolLoad: number[] = [];
+  private frames = new Map<
+    number,
+    {
+      next: number;
+      emit: number;
+      last: string | null;
+      done: Map<number, ImageBitmapDataURLWorkerResponse | null>;
+    }
+  >();
   /** Full snapshot pixel requests waiting for the worker, by token. */
   private pixelRequests = new Map<number, (dataURL: string | null) => void>();
   private pixelToken = 0;
@@ -138,6 +155,10 @@ export class CanvasManager implements CanvasManagerInterface {
     this.shadowDoms = new Set();
     this.worker?.terminate();
     this.worker = null;
+    this.pool.forEach((w) => w.terminate());
+    this.pool = [];
+    this.poolLoad = [];
+    this.frames.clear();
     this.snapshotInProgressMap = new Map();
     this.pixelRequests.clear();
   }
@@ -209,7 +230,18 @@ export class CanvasManager implements CanvasManagerInterface {
       (recordCanvas && typeof sampling === 'number') ||
       enableManualSnapshot
     ) {
-      this.worker = this.initFPSWorker();
+      this.worker = this.initFPSWorker(0);
+      this.pool = [this.worker];
+      this.poolLoad = [0];
+      // the encoder must keep up with every frame: more workers where the
+      // device has the cores (they run beside the page, not on its thread)
+      const cores =
+        (typeof navigator !== 'undefined' && navigator.hardwareConcurrency) || 2;
+      const extra = Math.min(2, Math.max(0, cores - 2));
+      for (let i = 1; i <= extra; i++) {
+        this.pool.push(this.initFPSWorker(i));
+        this.poolLoad.push(0);
+      }
     }
     this.addWindow(win);
 
@@ -292,9 +324,11 @@ export class CanvasManager implements CanvasManagerInterface {
     );
   }
 
-  private initFPSWorker(): Worker {
+  private initFPSWorker(index: number): Worker {
     const worker = new Worker(getImageBitmapDataUrlWorkerURL());
     worker.onmessage = (e) => {
+      if ((e.data as { seq?: number }).seq !== undefined)
+        this.poolLoad[index] = Math.max(0, (this.poolLoad[index] || 0) - 1);
       const benchStart =
         typeof __PANO_BENCH__ !== 'undefined' && __PANO_BENCH__
           ? performance.now()
@@ -323,10 +357,36 @@ export class CanvasManager implements CanvasManagerInterface {
       return;
     }
     const { id } = data;
+    if (data.seq !== undefined) return this.onSequencedFrame(id, data.seq, data);
     this.snapshotInProgressMap.set(id, false);
 
     if (!('base64' in data)) return;
     this.emitFrame(data);
+  }
+
+  /** Frames of one canvas in capture order; exact repeats dropped. */
+  private onSequencedFrame(
+    id: number,
+    seq: number,
+    data: ImageBitmapDataURLWorkerResponse | null,
+  ) {
+    const f = this.frames.get(id);
+    if (!f) return;
+    f.done.set(seq, data);
+    while (f.done.has(f.emit)) {
+      const d = f.done.get(f.emit)!;
+      f.done.delete(f.emit);
+      f.emit++;
+      if (!d || !('base64' in d)) continue;
+      // the first frame of a transparent canvas: nothing to draw (as upstream)
+      if (f.last === null && d.transparent) {
+        f.last = d.base64;
+        continue;
+      }
+      if (d.base64 === f.last) continue; // byte-identical to the previous frame
+      f.last = d.base64;
+      this.emitFrame(d);
+    }
   }
 
   private emitFrame(data: ImageBitmapDataURLWorkerResponse) {
@@ -547,13 +607,18 @@ export class CanvasManager implements CanvasManagerInterface {
     canvases.forEach((canvas) => {
       const id = this.mirror.getId(canvas);
 
-      // Check if canvas is valid and not already being processed
+      // Check if canvas is valid and not already being processed (only
+      // without a pool: the sequenced path never skips a frame)
       if (
         !this.mirror.hasNode(canvas) ||
         !canvas.width ||
         !canvas.height ||
-        this.snapshotInProgressMap.get(id)
+        (!this.pool.length && this.snapshotInProgressMap.get(id))
       ) {
+        return;
+      }
+      if (this.pool.length) {
+        this.captureSequenced(canvas, id, dataURLOptions, maxCanvasSize);
         return;
       }
 
@@ -591,6 +656,39 @@ export class CanvasManager implements CanvasManagerInterface {
     });
 
     return true;
+  }
+
+  private captureSequenced(
+    canvas: HTMLCanvasElement,
+    id: number,
+    dataURLOptions: DataURLOptions,
+    maxCanvasSize: MaxCanvasSize | null | undefined,
+  ) {
+    let f = this.frames.get(id);
+    if (!f) {
+      f = { next: 0, emit: 0, last: null, done: new Map() };
+      this.frames.set(id, f);
+    }
+    const seq = f.next++;
+    const { width, height } = canvas;
+    const pool = this.pool;
+    let w = 0;
+    for (let i = 1; i < this.poolLoad.length; i++)
+      if (this.poolLoad[i] < this.poolLoad[w]) w = i;
+    this.poolLoad[w]++;
+    createImageBitmap(canvas)
+      .then((bitmap) => {
+        if (this.pool !== pool) return bitmap.close();
+        pool[w].postMessage(
+          { id, seq, bitmap, width, height, dataURLOptions, maxCanvasSize },
+          [bitmap],
+        );
+      })
+      .catch(() => {
+        if (this.pool !== pool) return;
+        this.poolLoad[w] = Math.max(0, this.poolLoad[w] - 1);
+        this.onSequencedFrame(id, seq, null);
+      });
   }
 
   private startPendingCanvasMutationFlusher() {

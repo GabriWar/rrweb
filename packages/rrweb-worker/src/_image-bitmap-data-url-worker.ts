@@ -45,6 +45,16 @@ async function getTransparentBlobFor(
   }
 }
 
+/** sha-256 of the bytes as base64, or undefined without WebCrypto (insecure context). */
+async function sha256(b: ArrayBuffer): Promise<string | undefined> {
+  try {
+    if (!globalThis.crypto || !crypto.subtle) return undefined;
+    return encode(await crypto.subtle.digest('SHA-256', b));
+  } catch {
+    return undefined;
+  }
+}
+
 // `as any` because: https://github.com/Microsoft/TypeScript/issues/20595
 const worker: ImageBitmapDataURLResponseWorker = self;
 
@@ -117,10 +127,12 @@ const handle = async function (
 
     if (e.data.seq !== undefined) {
       // Panopticon item 8: one of several workers; the canvas manager keeps
-      // the order and drops exact repeats
+      // the order and drops exact repeats, by this hash (it keeps the hash
+      // of a canvas's last frame, not its bytes)
       return worker.postMessage({
         id,
         seq: e.data.seq,
+        hash: await sha256(arrayBuffer),
         transparent: (await transparentBase64) === base64,
         type,
         base64,

@@ -89,7 +89,11 @@ declare global {
   const __PANO_BENCH__: boolean;
 }
 
-let wrappedEmit!: (e: eventWithoutTime, isCheckout?: boolean) => void;
+let wrappedEmit!: (
+  e: eventWithoutTime,
+  isCheckout?: boolean,
+  timestamp?: number,
+) => void;
 
 // These are stored in module scope because we access them in other exported methods
 let _wrappedEmit:
@@ -298,13 +302,19 @@ function record<T = eventWithTime>(
   // emit or serialize after stop().
   let stopped = false;
 
-  wrappedEmit = (r: eventWithoutTime, isCheckout?: boolean) => {
+  wrappedEmit = (
+    r: eventWithoutTime,
+    isCheckout?: boolean,
+    timestamp?: number,
+  ) => {
     if (stopped) return;
     // Mutations buffered for this frame go out before anything recorded
     // after them (coalesceMutations); the flush re-enters with its own event.
     if (hasCoalescedMutations()) flushCoalescedMutations();
     const e = r as eventWithTime;
-    e.timestamp = nowTimestamp();
+    // Panopticon: an event recorded later than it happened (a canvas frame
+    // encoded by a worker) keeps the instant it happened
+    e.timestamp = timestamp ?? nowTimestamp();
     if (slicing) {
       slicing.queue.push([e, isCheckout]);
       return;
@@ -452,14 +462,18 @@ function record<T = eventWithTime>(
     {
       mirror,
       win: window,
-      mutationCb: (p: canvasMutationParam) =>
-        wrappedEmit({
-          type: EventType.IncrementalSnapshot,
-          data: {
-            source: IncrementalSource.CanvasMutation,
-            ...p,
+      mutationCb: (p: canvasMutationParam, timestamp?: number) =>
+        wrappedEmit(
+          {
+            type: EventType.IncrementalSnapshot,
+            data: {
+              source: IncrementalSource.CanvasMutation,
+              ...p,
+            },
           },
-        }),
+          undefined,
+          timestamp,
+        ),
       recordCanvas,
       blockClass,
       blockSelector,
@@ -691,7 +705,12 @@ function record<T = eventWithTime>(
     const state: SliceState = {
       queue: [],
       cancelled: false,
-      finish: () => complete(),
+      // an early finish (unload) takes the pixels still being encoded
+      // from the copies made when they were asked for
+      finish: () => {
+        canvasManager.flushPixels?.();
+        complete();
+      },
     };
     const complete = () => {
       if (completed || state.cancelled) return;
@@ -852,6 +871,9 @@ function record<T = eventWithTime>(
       finish: () => {
         if (completed || state.cancelled) return;
         if (node === undefined) node = finishNow?.() ?? null;
+        // pixels still being encoded come from the copies made when they
+        // were asked for, so the snapshot never goes out without them
+        canvasManager.flushPixels?.();
         complete();
       },
     };

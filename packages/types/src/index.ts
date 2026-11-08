@@ -113,6 +113,11 @@ export type NetworkRequest = Omit<
   responseHeaders?: NetworkHeaders;
   responseBody?: NetworkBody;
   isInitial?: boolean;
+  /**
+   * Panopticon: the PerformanceResourceTiming / NavigationTiming entry as
+   * toJSON() gives it, at full precision, without its URL (`name` is it).
+   */
+  timing?: Record<string, unknown>;
 };
 
 export type NetworkData = {
@@ -597,7 +602,11 @@ export type canvasMutationWithType = {
   type: CanvasContext;
 } & canvasMutationCommand;
 
-export type canvasMutationCallback = (p: canvasMutationParam) => void;
+/** `timestamp`: Panopticon, when the canvas was read (a frame encoded later keeps it) */
+export type canvasMutationCallback = (
+  p: canvasMutationParam,
+  timestamp?: number,
+) => void;
 
 export type canvasManagerMutationCallback = (
   target: HTMLCanvasElement,
@@ -637,6 +646,8 @@ export type ImageBitmapDataURLWorkerResponse =
       seq?: number;
       /** the frame equals a transparent canvas of its size */
       transparent?: boolean;
+      /** Panopticon: sha-256 of the encoded bytes (base64), when the worker has WebCrypto */
+      hash?: string;
       type: string;
       base64: string;
       width: number;

@@ -11,11 +11,16 @@ import type {
   DataURLOptions,
   ImageBitmapDataURLWorkerResponse,
 } from '@rrweb/types';
-import { isBlocked, onRequestAnimationFrame } from '../../../utils';
+import {
+  isBlocked,
+  nowTimestamp,
+  onRequestAnimationFrame,
+} from '../../../utils';
 import { CanvasContext } from '@rrweb/types';
 import initCanvas2DMutationObserver from './2d';
 import initCanvasContextObserver from './canvas';
 import initCanvasWebGLMutationObserver from './webgl';
+import initCanvasDirtyObserver from './dirty';
 import { getImageBitmapDataUrlWorkerURL } from 'rrweb-worker';
 import { callbackWrapper, registerErrorHandler } from '../../error-handler';
 import type { ErrorHandler } from '../../../types';
@@ -51,7 +56,24 @@ export interface CanvasManagerInterface {
     dataURLOptions: DataURLOptions,
     fill: (dataURL: string | null) => void,
   ): boolean;
+  /**
+   * Panopticon item 8 review: answer every capturePixels request still on
+   * its way, synchronously, with the pixels as of the request (a copy taken
+   * then). A snapshot finished early (unload) never goes out without them.
+   */
+  flushPixels?(): void;
 }
+
+/**
+ * Panopticon item 8 review: backpressure. A canvas whose frames the workers
+ * have not answered yet is not read back again while this many of its
+ * frames, or this many bitmap bytes over all canvases, are on their way;
+ * it stays marked changed, so the next frame read carries every draw.
+ * Reached only when the encoder cannot keep up with the page; it bounds
+ * memory instead of growing until the tab dies.
+ */
+export const MAX_FRAMES_IN_FLIGHT = 8;
+export const MAX_BITMAP_BYTES_IN_FLIGHT = 256 * 1024 * 1024;
 
 export interface CanvasManagerConstructorOptions {
   recordCanvas: boolean;
@@ -130,12 +152,40 @@ export class CanvasManager implements CanvasManagerInterface {
     {
       next: number;
       emit: number;
+      /** the previous frame: sha-256 of its bytes (base64 only where the worker has no WebCrypto) */
       last: string | null;
       done: Map<number, ImageBitmapDataURLWorkerResponse | null>;
+      /** capture instant of each frame on its way (nowTimestamp) */
+      at: Map<number, number>;
+      /** bitmap bytes of each frame not answered yet */
+      bytes: Map<number, number>;
     }
   >();
-  /** Full snapshot pixel requests waiting for the worker, by token. */
-  private pixelRequests = new Map<number, (dataURL: string | null) => void>();
+  /**
+   * Full snapshot pixel requests waiting for the worker, by token, with a
+   * copy of the canvas as of the request for flushPixels.
+   */
+  private pixelRequests = new Map<
+    number,
+    {
+      fill: (dataURL: string | null) => void;
+      copy: HTMLCanvasElement | null;
+      options: DataURLOptions;
+      worker: number;
+    }
+  >();
+  /** Canvases changed since their last frame read (dirty.ts), and the ones watched at all. */
+  private dirty = new WeakSet<object>();
+  private known = new WeakSet<object>();
+  private lastMarked: unknown = null;
+  private bitmapBytes = 0;
+  /** Bench only: in-flight and backpressure counters. */
+  public stats = {
+    framesInFlightPeak: 0,
+    bitmapBytesPeak: 0,
+    deferred: 0,
+    unchangedSkipped: 0,
+  };
   private pixelToken = 0;
 
   private lastSnapshotTime = 0;
@@ -159,26 +209,65 @@ export class CanvasManager implements CanvasManagerInterface {
     this.pool = [];
     this.poolLoad = [];
     this.frames.clear();
+    this.bitmapBytes = 0;
     this.snapshotInProgressMap = new Map();
     this.pixelRequests.clear();
   }
+
+  private markDirty = (ctx: { canvas: unknown }) => {
+    // one context draws many times a frame: only its first call does work
+    if (ctx === this.lastMarked) return;
+    this.lastMarked = ctx;
+    const canvas = ctx && ctx.canvas;
+    if (canvas && typeof canvas === 'object') {
+      this.dirty.add(canvas);
+      this.known.add(canvas);
+    }
+  };
+
+  private markCanvasDirty = (canvas: unknown) => {
+    if (canvas && typeof canvas === 'object') {
+      this.dirty.add(canvas);
+      this.known.add(canvas);
+    }
+  };
 
   public capturePixels(
     canvas: HTMLCanvasElement,
     dataURLOptions: DataURLOptions,
     fill: (dataURL: string | null) => void,
   ): boolean {
-    const worker = this.worker;
-    if (!worker || !canvas.width || !canvas.height) return false;
+    const pool = this.pool;
+    if (!pool.length || !canvas.width || !canvas.height) return false;
     const token = ++this.pixelToken;
     const { width, height } = canvas;
-    this.pixelRequests.set(token, fill);
+    // its own place in the pool: the least loaded worker, counted
+    let w = 0;
+    for (let i = 1; i < this.poolLoad.length; i++)
+      if (this.poolLoad[i] < this.poolLoad[w]) w = i;
+    this.poolLoad[w]++;
+    // the canvas as of now, for a snapshot finished before the worker answers
+    let copy: HTMLCanvasElement | null = null;
+    try {
+      copy = canvas.ownerDocument.createElement('canvas');
+      copy.width = width;
+      copy.height = height;
+      copy.getContext('2d')?.drawImage(canvas, 0, 0);
+    } catch {
+      copy = null;
+    }
+    this.pixelRequests.set(token, {
+      fill,
+      copy,
+      options: dataURLOptions,
+      worker: w,
+    });
     // the ImageBitmap is the canvas as of this call; encoding happens in
-    // the worker, which answers in order with the frames
+    // the worker
     createImageBitmap(canvas)
       .then((bitmap) => {
-        if (this.worker !== worker) return bitmap.close();
-        worker.postMessage(
+        if (this.pool !== pool) return bitmap.close();
+        pool[w].postMessage(
           { id: -1, initial: token, bitmap, width, height, dataURLOptions },
           [bitmap],
         );
@@ -187,11 +276,32 @@ export class CanvasManager implements CanvasManagerInterface {
     return true;
   }
 
+  public flushPixels() {
+    for (const [token, r] of [...this.pixelRequests]) {
+      let url: string | null = null;
+      try {
+        if (r.copy) {
+          url = r.copy.toDataURL(r.options.type, r.options.quality);
+          // a blank canvas has no pixels to record, as the worker decides
+          const blank = r.copy.ownerDocument.createElement('canvas');
+          blank.width = r.copy.width;
+          blank.height = r.copy.height;
+          if (url === blank.toDataURL(r.options.type, r.options.quality))
+            url = null;
+        }
+      } catch {
+        url = null;
+      }
+      this.answerPixels(token, url);
+    }
+  }
+
   private answerPixels(token: number, dataURL: string | null) {
-    const fill = this.pixelRequests.get(token);
-    if (!fill) return;
+    const r = this.pixelRequests.get(token);
+    if (!r) return;
     this.pixelRequests.delete(token);
-    fill(dataURL);
+    this.poolLoad[r.worker] = Math.max(0, (this.poolLoad[r.worker] || 0) - 1);
+    r.fill(dataURL);
   }
 
   public freeze() {
@@ -294,7 +404,14 @@ export class CanvasManager implements CanvasManagerInterface {
           unblockSelector,
           true,
         );
+        const dirtyReset = initCanvasDirtyObserver(
+          win,
+          this.markDirty,
+          this.markCanvasDirty,
+        );
+        // patches chain: undone in the reverse order
         this.restoreHandlers.push(() => {
+          dirtyReset();
           canvasContextReset();
         });
       }
@@ -373,56 +490,69 @@ export class CanvasManager implements CanvasManagerInterface {
     const f = this.frames.get(id);
     if (!f) return;
     f.done.set(seq, data);
+    const b = f.bytes.get(seq);
+    if (b !== undefined) {
+      this.bitmapBytes -= b;
+      f.bytes.delete(seq);
+    }
     while (f.done.has(f.emit)) {
       const d = f.done.get(f.emit)!;
+      const at = f.at.get(f.emit);
       f.done.delete(f.emit);
+      f.at.delete(f.emit);
       f.emit++;
       if (!d || !('base64' in d)) continue;
+      // exact: sha-256 of the bytes (the worker's), else the bytes themselves
+      const key = d.hash || d.base64;
       // the first frame of a transparent canvas: nothing to draw (as upstream)
       if (f.last === null && d.transparent) {
-        f.last = d.base64;
+        f.last = key;
         continue;
       }
-      if (d.base64 === f.last) continue; // byte-identical to the previous frame
-      f.last = d.base64;
-      this.emitFrame(d);
+      if (key === f.last) continue; // byte-identical to the previous frame
+      f.last = key;
+      this.emitFrame(d, at);
     }
   }
 
-  private emitFrame(data: ImageBitmapDataURLWorkerResponse) {
+  /** `at`: when the frame was read (its event's timestamp); now when unknown. */
+  private emitFrame(data: ImageBitmapDataURLWorkerResponse, at?: number) {
     if (!('base64' in data)) return;
     const { id, base64, type, width, height } = data;
-    this.mutationCb({
-      id,
-      type: CanvasContext['2D'],
-      commands: [
-        {
-          property: 'clearRect', // wipe canvas
-          args: [0, 0, width, height],
-        },
-        {
-          property: 'drawImage', // draws (semi-transparent) image
-          args: [
-            {
-              rr_type: 'ImageBitmap',
-              args: [
-                {
-                  rr_type: 'Blob',
-                  data: [{ rr_type: 'ArrayBuffer', base64 }],
-                  type,
-                },
-              ],
-            } as CanvasArg,
-            0,
-            0,
-            // The below args are needed if we enforce a max size, we want to
-            // retain the original size when drawing the image (which should be smaller)
-            width,
-            height,
-          ],
-        },
-      ],
-    });
+    this.mutationCb(
+      {
+        id,
+        type: CanvasContext['2D'],
+        commands: [
+          {
+            property: 'clearRect', // wipe canvas
+            args: [0, 0, width, height],
+          },
+          {
+            property: 'drawImage', // draws (semi-transparent) image
+            args: [
+              {
+                rr_type: 'ImageBitmap',
+                args: [
+                  {
+                    rr_type: 'Blob',
+                    data: [{ rr_type: 'ArrayBuffer', base64 }],
+                    type,
+                  },
+                ],
+              } as CanvasArg,
+              0,
+              0,
+              // The below args are needed if we enforce a max size, we want to
+              // retain the original size when drawing the image (which should be smaller)
+              width,
+              height,
+            ],
+          },
+        ],
+      },
+      at,
+    );
   }
 
   private processMutation: canvasManagerMutationCallback = (
@@ -602,6 +732,14 @@ export class CanvasManager implements CanvasManagerInterface {
     const canvases = canvasElement
       ? [canvasElement]
       : this.getCanvasElements(blockClass, blockSelector, unblockSelector);
+    // draws from here on mark their canvas again (markDirty)
+    this.lastMarked = null;
+    // a canvas that left the page takes its last frame's key with it
+    if (!canvasElement && this.frames.size > canvases.length) {
+      const live = new Set(canvases.map((c) => this.mirror.getId(c)));
+      for (const [id, f] of this.frames)
+        if (!live.has(id) && f.next === f.emit) this.frames.delete(id);
+    }
 
     // Process all canvases concurrently
     canvases.forEach((canvas) => {
@@ -618,7 +756,18 @@ export class CanvasManager implements CanvasManagerInterface {
         return;
       }
       if (this.pool.length) {
-        this.captureSequenced(canvas, id, dataURLOptions, maxCanvasSize);
+        // the frame loop reads a watched canvas only when it changed; an
+        // explicit snapshot(canvas) always reads it
+        if (
+          !canvasElement &&
+          this.known.has(canvas) &&
+          !this.dirty.has(canvas)
+        ) {
+          this.stats.unchangedSkipped++;
+          return;
+        }
+        if (this.captureSequenced(canvas, id, dataURLOptions, maxCanvasSize))
+          this.dirty.delete(canvas);
         return;
       }
 
@@ -658,19 +807,45 @@ export class CanvasManager implements CanvasManagerInterface {
     return true;
   }
 
+  /** Read one frame of a canvas into the pool; false when backpressure defers it. */
   private captureSequenced(
     canvas: HTMLCanvasElement,
     id: number,
     dataURLOptions: DataURLOptions,
     maxCanvasSize: MaxCanvasSize | null | undefined,
-  ) {
+  ): boolean {
     let f = this.frames.get(id);
     if (!f) {
-      f = { next: 0, emit: 0, last: null, done: new Map() };
+      f = {
+        next: 0,
+        emit: 0,
+        last: null,
+        done: new Map(),
+        at: new Map(),
+        bytes: new Map(),
+      };
       this.frames.set(id, f);
     }
-    const seq = f.next++;
     const { width, height } = canvas;
+    const bytes = width * height * 4;
+    if (
+      f.next - f.emit >= MAX_FRAMES_IN_FLIGHT ||
+      (this.bitmapBytes > 0 &&
+        this.bitmapBytes + bytes > MAX_BITMAP_BYTES_IN_FLIGHT)
+    ) {
+      this.stats.deferred++;
+      return false;
+    }
+    const seq = f.next++;
+    f.at.set(seq, nowTimestamp());
+    f.bytes.set(seq, bytes);
+    this.bitmapBytes += bytes;
+    let inFlight = 0;
+    for (const x of this.frames.values()) inFlight += x.next - x.emit;
+    if (inFlight > this.stats.framesInFlightPeak)
+      this.stats.framesInFlightPeak = inFlight;
+    if (this.bitmapBytes > this.stats.bitmapBytesPeak)
+      this.stats.bitmapBytesPeak = this.bitmapBytes;
     const pool = this.pool;
     let w = 0;
     for (let i = 1; i < this.poolLoad.length; i++)
@@ -689,6 +864,7 @@ export class CanvasManager implements CanvasManagerInterface {
         this.poolLoad[w] = Math.max(0, this.poolLoad[w] - 1);
         this.onSequencedFrame(id, seq, null);
       });
+    return true;
   }
 
   private startPendingCanvasMutationFlusher() {

@@ -126,3 +126,134 @@ describe('canvas frames: every frame, in order, exact repeats only dropped (item
     m.reset();
   });
 });
+
+/** The frame loop itself (no manual snapshot): rAF-driven, with the dirty observer installed. */
+function setupLoop() {
+  // jsdom has no 2D context: a stand-in prototype the dirty observer patches
+  const g = window as unknown as Record<string, unknown>;
+  class Ctx2D {
+    canvas!: HTMLCanvasElement;
+    fillRect() {}
+    getImageData() {}
+  }
+  g.CanvasRenderingContext2D = Ctx2D;
+  document.body.innerHTML = '<canvas id="c" width="4" height="4"></canvas>';
+  const canvas = document.getElementById('c') as HTMLCanvasElement;
+  const mirror = createMirror();
+  mirror.add(canvas, { id: 7, type: 2, tagName: 'canvas', attributes: {}, childNodes: [] } as never);
+  const frames: Array<{ base64: string; at?: number }> = [];
+  const m = new CanvasManager({
+    recordCanvas: true,
+    mutationCb: (p, at) =>
+      frames.push({
+        base64: (p.commands[1].args[0] as { args: Array<{ data: Array<{ base64: string }> }> }).args[0].data[0].base64,
+        at,
+      }),
+    win: window as never,
+    blockClass: 'rr-block',
+    blockSelector: null,
+    unblockSelector: null,
+    mirror,
+    dataURLOptions: { type: 'image/png' },
+    sampling: 1000,
+  });
+  const ctx = new Ctx2D();
+  ctx.canvas = canvas;
+  const restore = () => {
+    m.reset();
+    delete g.CanvasRenderingContext2D;
+  };
+  return { m, canvas, ctx, frames, restore };
+}
+
+const seqPosts = () => posts.filter((p) => p.data.seq !== undefined);
+const answerAll = (base64: (seq: number) => string, hash?: (seq: number) => string) => {
+  for (const p of seqPosts().splice(0)) {
+    const seq = p.data.seq!;
+    workers[p.worker].answer({ ...reply(seq, base64(seq)), ...(hash ? { hash: hash(seq) } : {}) });
+  }
+  posts = posts.filter((p) => p.data.seq === undefined);
+};
+
+describe('canvas frames: read only when changed, bounded in flight, stamped when read (item 8 review)', () => {
+  it('a canvas seen drawing is read only after a draw, resize or new context; unseen ones every frame', async () => {
+    const { m, canvas, ctx, restore } = setupLoop();
+    try {
+      await new Promise((r) => setTimeout(r, 60));
+      // never seen drawing (context older than the recorder?): read every frame
+      expect(seqPosts().length).toBeGreaterThan(1);
+      answerAll(() => 'A');
+      ctx.fillRect(); // now watched, and changed
+      await new Promise((r) => setTimeout(r, 40));
+      expect(seqPosts()).toHaveLength(1);
+      answerAll(() => 'B');
+      await new Promise((r) => setTimeout(r, 60));
+      expect(seqPosts()).toHaveLength(0); // unchanged: not read back
+      expect(m.stats.unchangedSkipped).toBeGreaterThan(0);
+      canvas.width = 4; // clears the bitmap even at the same size
+      await new Promise((r) => setTimeout(r, 40));
+      expect(seqPosts()).toHaveLength(1);
+      expect(canvas.width).toBe(4); // the getter still works
+    } finally {
+      restore();
+    }
+  });
+
+  it('stops reading a canvas while 8 of its frames are on their way, and keeps it marked changed', async () => {
+    const { m, ctx, restore } = setupLoop();
+    try {
+      ctx.fillRect();
+      for (let i = 0; i < 12; i++) {
+        ctx.fillRect();
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      expect(seqPosts()).toHaveLength(8);
+      expect(m.stats.deferred).toBeGreaterThan(0);
+      expect(m.stats.framesInFlightPeak).toBe(8);
+      expect(m.stats.bitmapBytesPeak).toBe(8 * 4 * 4 * 4);
+      answerAll((s) => `F${s}`);
+      // no draw since: the deferred change is still read
+      await new Promise((r) => setTimeout(r, 40));
+      expect(seqPosts().length).toBeGreaterThanOrEqual(1);
+    } finally {
+      restore();
+    }
+  });
+
+  it('each frame carries the instant it was read, not when the worker answered', async () => {
+    const { ctx, frames, restore } = setupLoop();
+    try {
+      const before = Date.now();
+      ctx.fillRect();
+      await new Promise((r) => setTimeout(r, 30));
+      const readBy = Date.now();
+      await new Promise((r) => setTimeout(r, 60));
+      const p = seqPosts()[0];
+      workers[p.worker].answer(reply(p.data.seq!, 'X'));
+      const f = frames[frames.length - 1];
+      expect(f.base64).toBe('X');
+      expect(f.at).toBeGreaterThanOrEqual(before);
+      expect(f.at).toBeLessThanOrEqual(readBy);
+    } finally {
+      restore();
+    }
+  });
+
+  it("repeats are found by the worker's sha-256, the manager keeps only that hash, and forgets a canvas that left the page", async () => {
+    const { m, canvas, frames, restore } = setupLoop();
+    try {
+      await new Promise((r) => setTimeout(r, 60));
+      // different bytes in the test stand-in, same hash: the hash decides
+      answerAll((s) => `P${s}`, () => 'H1');
+      expect(frames).toHaveLength(1);
+      const f = (m as unknown as { frames: Map<number, { last: string }> }).frames.get(7)!;
+      expect(f.last).toBe('H1');
+      canvas.remove();
+      answerAll(() => 'Q', () => 'H2');
+      await new Promise((r) => setTimeout(r, 40));
+      expect((m as unknown as { frames: Map<number, unknown> }).frames.has(7)).toBe(false);
+    } finally {
+      restore();
+    }
+  });
+});

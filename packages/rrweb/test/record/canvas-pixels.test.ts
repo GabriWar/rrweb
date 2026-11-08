@@ -33,6 +33,10 @@ function fakeManager() {
       requests.push({ canvas, fill });
       return true;
     }
+    // the copy made when the pixels were asked for (item 8 review)
+    flushPixels() {
+      for (const r of requests.splice(0)) r.fill(`data:image/png;base64,COPY-${r.canvas.id}`);
+    }
   }
   return { requests, get: () => new Fake() };
 }
@@ -118,7 +122,7 @@ describe('full snapshot canvas pixels off the main thread (item 8)', () => {
     expect(events).toEqual([]);
   });
 
-  it('flushMutations() (unload) sends the snapshot without waiting; the canvas still on its way has no pixels', async () => {
+  it('flushMutations() (unload) sends the snapshot without waiting, the canvas still on its way with the pixels copied when they were asked for (item 8 review)', async () => {
     page();
     const m = fakeManager();
     const events: eventWithTime[] = [];
@@ -127,12 +131,12 @@ describe('full snapshot canvas pixels off the main thread (item 8)', () => {
       recordCanvas: true,
       getCanvasManager: m.get as never,
     })!;
-    m.requests[0].fill('data:image/png;base64,AAAA');
+    m.requests.shift()!.fill('data:image/png;base64,AAAA');
     flushMutations();
     expect(events.map((e) => e.type).slice(0, 2)).toEqual([EventType.Meta, EventType.FullSnapshot]);
     const node = (events[1].data as { node: serializedNodeWithId }).node;
     expect(canvasOf(node, 'a')!.rr_dataURL).toBe('data:image/png;base64,AAAA');
-    expect(canvasOf(node, 'b')!.rr_dataURL).toBeUndefined();
+    expect(canvasOf(node, 'b')!.rr_dataURL).toBe('data:image/png;base64,COPY-b');
     stop();
   });
 

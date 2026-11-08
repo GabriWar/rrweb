@@ -41,7 +41,10 @@ if (!('sandbox' in HTMLIFrameElement.prototype)) {
     configurable: true,
     get(this: HTMLIFrameElement) {
       const tokens = () =>
-        (this.getAttribute('sandbox') || '').trim().split(/\s+/).filter(Boolean);
+        (this.getAttribute('sandbox') || '')
+          .trim()
+          .split(/\s+/)
+          .filter(Boolean);
       return {
         get length() {
           return tokens().length;

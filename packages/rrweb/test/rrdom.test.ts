@@ -3,14 +3,8 @@
  */
 import { EventType, IncrementalSource, Replayer, eventWithTime } from '../src';
 import { vi, type MockInstance } from 'vitest';
-import type {
-  styleDeclarationData,
-  styleSheetRuleData,
-} from '@rrweb/types';
-import {
-  createMirror,
-  Mirror as NodeMirror,
-} from 'rrweb-snapshot';
+import type { styleDeclarationData, styleSheetRuleData } from '@rrweb/types';
+import { createMirror, Mirror as NodeMirror } from 'rrweb-snapshot';
 import type { ReplayerHandler } from 'rrdom';
 
 describe('diff algorithm for rrdom', () => {

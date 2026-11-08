@@ -1080,7 +1080,6 @@ function serializeElementNode(
         }),
       );
 
-
       attributes.value = maskInputValue({
         isMasked: forceMask,
         element: el,
@@ -1380,48 +1379,48 @@ function slimDOMExcluded(
  * Options of serializeNodeWithId (and of the sliced walker, Panopticon RR-017).
  */
 export type SerializeNodeOptions = {
-    doc: Document;
-    mirror: Mirror;
-    blockClass: string | RegExp;
-    blockSelector: string | null;
-    unblockSelector: string | null;
-    maskTextClass: string | RegExp;
-    unmaskTextClass: string | RegExp | null;
-    maskTextSelector: string | null;
-    unmaskTextSelector: string | null;
-    skipChild: boolean;
-    inlineStylesheet: boolean;
-    newlyAddedElement?: boolean;
-    maskInputOptions?: MaskInputOptions;
-    maskAllText: boolean;
-    maskAttributeFn: MaskAttributeFn | undefined;
-    maskTextFn: MaskTextFn | undefined;
-    maskInputFn: MaskInputFn | undefined;
-    slimDOMOptions: SlimDOMOptions;
-    dataURLOptions?: DataURLOptions;
-    keepIframeSrcFn?: KeepIframeSrcFn;
-    inlineImages?: boolean;
-    recordCanvas?: boolean;
-    preserveWhiteSpace?: boolean;
-    onSerialize?: (n: Node) => unknown;
-    onIframeLoad?: (
-      iframeNode: HTMLIFrameElement,
-      node: serializedElementNodeWithId,
-    ) => unknown;
-    iframeLoadTimeout?: number;
-    onBlockedImageLoad?: (
-      imageEl: HTMLImageElement,
-      node: serializedElementNodeWithId,
-      rect: DOMRect,
-    ) => unknown;
-    onStylesheetLoad?: (
-      linkNode: HTMLLinkElement,
-      node: serializedElementNodeWithId,
-    ) => unknown;
-    stylesheetLoadTimeout?: number;
-    cssCaptured?: boolean;
-    ignoreCSSAttributes?: Set<string>;
-  };
+  doc: Document;
+  mirror: Mirror;
+  blockClass: string | RegExp;
+  blockSelector: string | null;
+  unblockSelector: string | null;
+  maskTextClass: string | RegExp;
+  unmaskTextClass: string | RegExp | null;
+  maskTextSelector: string | null;
+  unmaskTextSelector: string | null;
+  skipChild: boolean;
+  inlineStylesheet: boolean;
+  newlyAddedElement?: boolean;
+  maskInputOptions?: MaskInputOptions;
+  maskAllText: boolean;
+  maskAttributeFn: MaskAttributeFn | undefined;
+  maskTextFn: MaskTextFn | undefined;
+  maskInputFn: MaskInputFn | undefined;
+  slimDOMOptions: SlimDOMOptions;
+  dataURLOptions?: DataURLOptions;
+  keepIframeSrcFn?: KeepIframeSrcFn;
+  inlineImages?: boolean;
+  recordCanvas?: boolean;
+  preserveWhiteSpace?: boolean;
+  onSerialize?: (n: Node) => unknown;
+  onIframeLoad?: (
+    iframeNode: HTMLIFrameElement,
+    node: serializedElementNodeWithId,
+  ) => unknown;
+  iframeLoadTimeout?: number;
+  onBlockedImageLoad?: (
+    imageEl: HTMLImageElement,
+    node: serializedElementNodeWithId,
+    rect: DOMRect,
+  ) => unknown;
+  onStylesheetLoad?: (
+    linkNode: HTMLLinkElement,
+    node: serializedElementNodeWithId,
+  ) => unknown;
+  stylesheetLoadTimeout?: number;
+  cssCaptured?: boolean;
+  ignoreCSSAttributes?: Set<string>;
+};
 
 /**
  * First half of serializeNodeWithId: serialize `n` itself, give it an id,
@@ -1804,7 +1803,6 @@ function serializeNodeTail(
     // this property was not needed in replay side
     delete serializedNode.needBlock;
   }
-
 }
 
 /** Serialize the light-DOM and shadow children of a node (synchronous walk). */
@@ -1857,46 +1855,46 @@ export function serializeNodeWithId(
 
 /** snapshot()'s options. */
 export type SnapshotOptions = {
-    mirror?: Mirror;
-    blockClass?: string | RegExp;
-    blockSelector?: string | null;
-    unblockSelector?: string | null;
-    maskAllText?: boolean;
-    maskTextClass?: string | RegExp;
-    unmaskTextClass?: string | RegExp | null;
-    maskTextSelector?: string | null;
-    unmaskTextSelector?: string | null;
-    inlineStylesheet?: boolean;
-    maskAllInputs?: boolean | MaskInputOptions;
-    maskAttributeFn?: MaskAttributeFn;
-    maskTextFn?: MaskTextFn;
-    maskInputFn?: MaskInputFn;
-    slimDOM?: 'all' | boolean | SlimDOMOptions;
-    dataURLOptions?: DataURLOptions;
-    inlineImages?: boolean;
-    recordCanvas?: boolean;
-    preserveWhiteSpace?: boolean;
-    onSerialize?: (n: Node) => unknown;
-    onIframeLoad?: (
-      iframeNode: HTMLIFrameElement,
-      node: serializedElementNodeWithId,
-    ) => unknown;
-    iframeLoadTimeout?: number;
-    onBlockedImageLoad?: (
-      imageEl: HTMLImageElement,
-      node: serializedElementNodeWithId,
-      rect: DOMRect,
-    ) => unknown;
-    onStylesheetLoad?: (
-      linkNode: HTMLLinkElement,
-      node: serializedElementNodeWithId,
-    ) => unknown;
-    stylesheetLoadTimeout?: number;
-    keepIframeSrcFn?: KeepIframeSrcFn;
-    ignoreCSSAttributes?: Set<string>;
-    /** RR-030, for this call only (record() uses setAssetHook instead). */
-    assetHook?: AssetHook;
-  };
+  mirror?: Mirror;
+  blockClass?: string | RegExp;
+  blockSelector?: string | null;
+  unblockSelector?: string | null;
+  maskAllText?: boolean;
+  maskTextClass?: string | RegExp;
+  unmaskTextClass?: string | RegExp | null;
+  maskTextSelector?: string | null;
+  unmaskTextSelector?: string | null;
+  inlineStylesheet?: boolean;
+  maskAllInputs?: boolean | MaskInputOptions;
+  maskAttributeFn?: MaskAttributeFn;
+  maskTextFn?: MaskTextFn;
+  maskInputFn?: MaskInputFn;
+  slimDOM?: 'all' | boolean | SlimDOMOptions;
+  dataURLOptions?: DataURLOptions;
+  inlineImages?: boolean;
+  recordCanvas?: boolean;
+  preserveWhiteSpace?: boolean;
+  onSerialize?: (n: Node) => unknown;
+  onIframeLoad?: (
+    iframeNode: HTMLIFrameElement,
+    node: serializedElementNodeWithId,
+  ) => unknown;
+  iframeLoadTimeout?: number;
+  onBlockedImageLoad?: (
+    imageEl: HTMLImageElement,
+    node: serializedElementNodeWithId,
+    rect: DOMRect,
+  ) => unknown;
+  onStylesheetLoad?: (
+    linkNode: HTMLLinkElement,
+    node: serializedElementNodeWithId,
+  ) => unknown;
+  stylesheetLoadTimeout?: number;
+  keepIframeSrcFn?: KeepIframeSrcFn;
+  ignoreCSSAttributes?: Set<string>;
+  /** RR-030, for this call only (record() uses setAssetHook instead). */
+  assetHook?: AssetHook;
+};
 
 /** Normalize snapshot() options into what serializeNodeWithId takes. */
 function snapshotSerializeOptions(
@@ -2118,7 +2116,10 @@ export async function snapshotSliced(
       stack.length = k;
       forgetChildren(f.sn, mirror);
       // same id (the mirror has the node), no second onSerialize
-      const head = serializeNodeHead(f.n, { ...f.options, onSerialize: undefined });
+      const head = serializeNodeHead(f.n, {
+        ...f.options,
+        onSerialize: undefined,
+      });
       const sn = f.sn as unknown as Record<string, unknown>;
       for (const key of Object.keys(sn)) delete sn[key];
       if (head) Object.assign(sn, head.serializedNode);

@@ -90,7 +90,11 @@ describe('snapshotSliced (RR-017)', () => {
         },
       };
       cleanupSnapshot();
-      const promised = await snapshotSliced(doc, { ...OPTIONS, mirror: new Mirror() }, slicer);
+      const promised = await snapshotSliced(
+        doc,
+        { ...OPTIONS, mirror: new Mirror() },
+        slicer,
+      );
       if (yields < 3) return; // a fixture too small to yield three times
       expect(finished).not.toBeNull();
       expect(JSON.stringify(finished)).toBe(expected);
@@ -101,7 +105,9 @@ describe('snapshotSliced (RR-017)', () => {
   );
 
   it('shadow roots and slots: identical, with isShadow / isShadowHost in the same places', async () => {
-    const doc = load('<div id="host"><span slot="a">light</span></div><p>after</p>');
+    const doc = load(
+      '<div id="host"><span slot="a">light</span></div><p>after</p>',
+    );
     const host = doc.getElementById('host')!;
     const root = host.attachShadow({ mode: 'open' });
     root.innerHTML = '<b>in shadow <slot name="a"></slot></b><i>two</i>';
@@ -112,7 +118,9 @@ describe('snapshotSliced (RR-017)', () => {
   });
 
   it('a node removed between slices is not serialized; one added to a visited parent is left to the mutation buffer', async () => {
-    const doc = load('<ul id="l"><li id="a">a</li><li id="b">b</li><li id="c">c</li></ul><p id="tail">t</p>');
+    const doc = load(
+      '<ul id="l"><li id="a">a</li><li id="b">b</li><li id="c">c</li></ul><p id="tail">t</p>',
+    );
     let step = 0;
     const slicer = everyNode(() => {
       step++;
@@ -124,10 +132,15 @@ describe('snapshotSliced (RR-017)', () => {
       }
     });
     cleanupSnapshot();
-    const sn = await snapshotSliced(doc, { ...OPTIONS, mirror: new Mirror() }, slicer);
+    const sn = await snapshotSliced(
+      doc,
+      { ...OPTIONS, mirror: new Mirror() },
+      slicer,
+    );
     const ids: string[] = [];
     const walk = (n: serializedNodeWithId) => {
-      if (n.type === NodeType.Element && typeof n.attributes.id === 'string') ids.push(n.attributes.id);
+      if (n.type === NodeType.Element && typeof n.attributes.id === 'string')
+        ids.push(n.attributes.id);
       if ('childNodes' in n) n.childNodes.forEach(walk);
     };
     walk(sn!);
@@ -138,7 +151,9 @@ describe('snapshotSliced (RR-017)', () => {
   });
 
   it('a node moved into a not-yet-visited part is serialized once', async () => {
-    const doc = load('<div id="x"><span id="m">m</span></div><div id="y"></div>');
+    const doc = load(
+      '<div id="x"><span id="m">m</span></div><div id="y"></div>',
+    );
     let moved = false;
     cleanupSnapshot();
     const mirror = new Mirror();
@@ -217,7 +232,10 @@ describe('snapshotSliced (RR-017)', () => {
           shouldYield: () => true,
           yieldSlice: async () => {
             // #s1 and its text are serialized, #s2 / #s3 still queued
-            if (!blocked && mirror.hasNode(doc.getElementById('s1')!.firstChild!)) {
+            if (
+              !blocked &&
+              mirror.hasNode(doc.getElementById('s1')!.firstChild!)
+            ) {
               block(doc.getElementById('p')!);
               blocked = true;
             }
@@ -232,7 +250,9 @@ describe('snapshotSliced (RR-017)', () => {
       expect(json).toContain('"id":"after"');
       // the dropped nodes are out of the mirror: later mutations of them are filtered
       expect(mirror.has(mirror.getId(doc.getElementById('s1')!))).toBe(false);
-      expect(mirror.has(mirror.getId(doc.getElementById('s1')!.firstChild!))).toBe(false);
+      expect(
+        mirror.has(mirror.getId(doc.getElementById('s1')!.firstChild!)),
+      ).toBe(false);
       expect(mirror.has(mirror.getId(doc.getElementById('p')!))).toBe(true);
       // what the synchronous snapshot of the changed page gives
       cleanupSnapshot();
@@ -242,7 +262,9 @@ describe('snapshotSliced (RR-017)', () => {
   );
 
   it('a block on an element whose children are all done stays a capture of the earlier state', async () => {
-    const doc = load('<div id="p"><span>one</span></div><div id="q"><p>x</p><p>y</p></div>');
+    const doc = load(
+      '<div id="p"><span>one</span></div><div id="q"><p>x</p><p>y</p></div>',
+    );
     const mirror = new Mirror();
     let blocked = false;
     cleanupSnapshot();

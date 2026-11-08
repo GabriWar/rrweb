@@ -23,7 +23,12 @@ function crossOriginMessage(source: Window) {
     timestamp: Date.now(),
   };
   return new MessageEvent('message', {
-    data: { type: 'rrweb', event, origin: 'https://child.example', isCheckout: false },
+    data: {
+      type: 'rrweb',
+      event,
+      origin: 'https://child.example',
+      isCheckout: false,
+    },
     origin: 'https://child.example',
     source,
   });
@@ -87,7 +92,9 @@ describe('__RRWEB_EXCLUDE_CROSS_ORIGIN_IFRAME__', () => {
     const shape = (events: eventWithTime[]) =>
       events.map((e) =>
         e.type === EventType.IncrementalSnapshot
-          ? `${e.type}:${e.data.source}:${'isAttachIframe' in e.data ? 'attach' : ''}`
+          ? `${e.type}:${e.data.source}:${
+              'isAttachIframe' in e.data ? 'attach' : ''
+            }`
           : String(e.type),
       );
     expect(shape(flagged)).toEqual(shape(plain));

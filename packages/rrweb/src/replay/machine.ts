@@ -184,8 +184,13 @@ export function createPlayerService(
           };
         }),
         play(ctx) {
-          const { timer, events, baselineTime, lastPlayedEvent, lastPlayedSync } =
-            ctx;
+          const {
+            timer,
+            events,
+            baselineTime,
+            lastPlayedEvent,
+            lastPlayedSync,
+          } = ctx;
           timer.clear();
 
           for (const event of events) {

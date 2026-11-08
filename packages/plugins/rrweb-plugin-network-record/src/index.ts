@@ -11,6 +11,24 @@ import type {
 } from '@rrweb/types';
 import { patch } from '@rrweb/utils';
 
+/** Panopticon replay gate: compile `pano:rec:*` measures in (false in production). */
+declare const __PANO_BENCH__: boolean | undefined;
+
+function benchNow(): number {
+  return typeof __PANO_BENCH__ !== 'undefined' && __PANO_BENCH__
+    ? performance.now()
+    : 0;
+}
+
+function benchEnd(start: number) {
+  if (typeof __PANO_BENCH__ !== 'undefined' && __PANO_BENCH__) {
+    performance.measure('pano:rec:network', {
+      start,
+      end: performance.now(),
+    });
+  }
+}
+
 export type {
   NetworkBody,
   NetworkData,
@@ -111,6 +129,7 @@ function initPerformanceObserver(
     });
   }
   const observer = new win.PerformanceObserver((entries) => {
+    const benchStart = benchNow();
     const shouldRecordViaPerformanceObserver = (
       entry: ObservedPerformanceEntry,
     ) =>
@@ -136,6 +155,7 @@ function initPerformanceObserver(
         name: entry.name,
       })),
     });
+    benchEnd(benchStart);
   });
   observer.observe({ entryTypes: ['navigation', 'resource'] });
   return () => {
@@ -549,6 +569,7 @@ function initNetworkObserver(
   ) as Required<NetworkRecordOptions>;
 
   const cb: networkCallback = (data) => {
+    const benchStart = benchNow();
     const requests = data.requests
       .map((request) => networkOptions.transformRequestFn(request))
       .filter(Boolean) as NetworkRequest[];
@@ -556,6 +577,7 @@ function initNetworkObserver(
     if (requests.length > 0 || data.isInitial) {
       callback({ ...data, requests });
     }
+    benchEnd(benchStart);
   };
   const performanceObserver = initPerformanceObserver(cb, win, networkOptions);
   let xhrObserver: listenerHandler = () => {

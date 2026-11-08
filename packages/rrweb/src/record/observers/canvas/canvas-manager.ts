@@ -250,46 +250,63 @@ export class CanvasManager implements CanvasManagerInterface {
   private initFPSWorker(): Worker {
     const worker = new Worker(getImageBitmapDataUrlWorkerURL());
     worker.onmessage = (e) => {
-      const data = e.data as ImageBitmapDataURLWorkerResponse;
-      const { id } = data;
-      this.snapshotInProgressMap.set(id, false);
-
-      if (!('base64' in data)) return;
-
-      const { base64, type, width, height } = data;
-      this.mutationCb({
-        id,
-        type: CanvasContext['2D'],
-        commands: [
-          {
-            property: 'clearRect', // wipe canvas
-            args: [0, 0, width, height],
-          },
-          {
-            property: 'drawImage', // draws (semi-transparent) image
-            args: [
-              {
-                rr_type: 'ImageBitmap',
-                args: [
-                  {
-                    rr_type: 'Blob',
-                    data: [{ rr_type: 'ArrayBuffer', base64 }],
-                    type,
-                  },
-                ],
-              } as CanvasArg,
-              0,
-              0,
-              // The below args are needed if we enforce a max size, we want to
-              // retain the original size when drawing the image (which should be smaller)
-              width,
-              height,
-            ],
-          },
-        ],
-      });
+      const benchStart =
+        typeof __PANO_BENCH__ !== 'undefined' && __PANO_BENCH__
+          ? performance.now()
+          : 0;
+      try {
+        this.onWorkerFrame(e);
+      } finally {
+        if (typeof __PANO_BENCH__ !== 'undefined' && __PANO_BENCH__) {
+          performance.measure('pano:rec:canvas', {
+            start: benchStart,
+            end: performance.now(),
+          });
+        }
+      }
     };
     return worker;
+  }
+
+  private onWorkerFrame(e: MessageEvent) {
+    const data = e.data as ImageBitmapDataURLWorkerResponse;
+    const { id } = data;
+    this.snapshotInProgressMap.set(id, false);
+
+    if (!('base64' in data)) return;
+
+    const { base64, type, width, height } = data;
+    this.mutationCb({
+      id,
+      type: CanvasContext['2D'],
+      commands: [
+        {
+          property: 'clearRect', // wipe canvas
+          args: [0, 0, width, height],
+        },
+        {
+          property: 'drawImage', // draws (semi-transparent) image
+          args: [
+            {
+              rr_type: 'ImageBitmap',
+              args: [
+                {
+                  rr_type: 'Blob',
+                  data: [{ rr_type: 'ArrayBuffer', base64 }],
+                  type,
+                },
+              ],
+            } as CanvasArg,
+            0,
+            0,
+            // The below args are needed if we enforce a max size, we want to
+            // retain the original size when drawing the image (which should be smaller)
+            width,
+            height,
+          ],
+        },
+      ],
+    });
   }
 
   private processMutation: canvasManagerMutationCallback = (
@@ -424,6 +441,26 @@ export class CanvasManager implements CanvasManagerInterface {
    * @returns `true` if the snapshot was taken, `false` if it was throttled.
    */
   private takeSnapshot(
+    timestamp: DOMHighResTimeStamp,
+    canvasElement?: HTMLCanvasElement,
+  ) {
+    const benchStart =
+      typeof __PANO_BENCH__ !== 'undefined' && __PANO_BENCH__
+        ? performance.now()
+        : 0;
+    try {
+      return this.takeSnapshotNow(timestamp, canvasElement);
+    } finally {
+      if (typeof __PANO_BENCH__ !== 'undefined' && __PANO_BENCH__) {
+        performance.measure('pano:rec:canvas', {
+          start: benchStart,
+          end: performance.now(),
+        });
+      }
+    }
+  }
+
+  private takeSnapshotNow(
     timestamp: DOMHighResTimeStamp,
     canvasElement?: HTMLCanvasElement,
   ) {

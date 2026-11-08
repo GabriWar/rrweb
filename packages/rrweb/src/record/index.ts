@@ -858,7 +858,12 @@ function record<T = eventWithTime>(
     slicing = state;
     activeSlicing = state;
     let sliceStart = start;
+    // a slice is open while the walk runs; the wait for canvas pixels
+    // after the last slice is not main-thread work
+    let sliceOpen = true;
     const endSlice = () => {
+      if (!sliceOpen) return;
+      sliceOpen = false;
       if (bench)
         performance.measure('pano:rec:snapshot', {
           start: sliceStart,
@@ -917,6 +922,7 @@ function record<T = eventWithTime>(
             // stop() ran while the page had its turn: not one more node
             if (state.cancelled) throw SLICE_CANCELLED;
             sliceStart = performance.now();
+            sliceOpen = true;
           });
         },
         control: (fn) => {

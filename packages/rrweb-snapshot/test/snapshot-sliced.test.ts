@@ -68,6 +68,38 @@ describe('snapshotSliced (RR-017)', () => {
     },
   );
 
+  it.each(fixtures)(
+    '%s: finishNow() during a yield completes synchronously, byte-identical, and the promise gives the same node',
+    async (file) => {
+      const html = fs.readFileSync(path.join(htmlDir, file), 'utf8');
+      const doc = load(html);
+      const expected = syncJson(doc);
+      let finishNow: (() => serializedNodeWithId | null) | undefined;
+      let finished: serializedNodeWithId | null = null;
+      let yields = 0;
+      const slicer: SnapshotSlicer = {
+        shouldYield: () => true,
+        yieldSlice: async () => {
+          yields++;
+          // the recorder's flushMutations() / a user event, while the page has its turn
+          if (yields === 3) finished = finishNow!();
+          await Promise.resolve();
+        },
+        control: (f) => {
+          finishNow = f;
+        },
+      };
+      cleanupSnapshot();
+      const promised = await snapshotSliced(doc, { ...OPTIONS, mirror: new Mirror() }, slicer);
+      if (yields < 3) return; // a fixture too small to yield three times
+      expect(finished).not.toBeNull();
+      expect(JSON.stringify(finished)).toBe(expected);
+      expect(promised).toBe(finished);
+      expect(yields).toBe(3);
+      expect(finishNow!()).toBe(finished);
+    },
+  );
+
   it('shadow roots and slots: identical, with isShadow / isShadowHost in the same places', async () => {
     const doc = load('<div id="host"><span slot="a">light</span></div><p>after</p>');
     const host = doc.getElementById('host')!;

@@ -2005,6 +2005,14 @@ export interface SnapshotSlicer {
   shouldYield(): boolean;
   /** resolves when the next slice may start */
   yieldSlice(): Promise<void>;
+  /**
+   * Receives `finishNow`, which runs the rest of the walk synchronously (no
+   * more yields) and returns the finished snapshot; the promise then
+   * resolves with that same node. It returns null when it cannot finish
+   * there: called from inside the walk itself (the walk then finishes
+   * without yielding), or after the walk failed.
+   */
+  control?(finishNow: () => serializedNodeWithId | null): void;
 }
 
 /**
@@ -2110,41 +2118,70 @@ export async function snapshotSliced(
       return;
     }
   };
+  let forced = false;
+  let walking = false;
+  let done = false;
+  let failed = false;
+  /** Walk until the end (true) or until a slice should yield (false). */
+  const walk = (): boolean => {
+    walking = true;
+    try {
+      while (stack.length) {
+        const f = stack[stack.length - 1];
+        if (f.i < f.queue.length) {
+          const child = f.queue[f.i++];
+          // listed when the parent was visited; the page may have moved it since
+          if (seen.has(child) || dom.parentNode(child) !== f.parent) continue;
+          seen.add(child);
+          const head = serializeNodeHead(child, f.childOptions);
+          if (head) {
+            (f.sn as { childNodes: serializedNodeWithId[] }).childNodes.push(
+              head.serializedNode,
+            );
+            const shadowChild =
+              f.parent !== f.n && isNativeShadowDom(f.parent as ShadowRoot);
+            open(child, head, f.childOptions, shadowChild);
+          }
+          if (!forced && slicer.shouldYield()) return false;
+          continue;
+        }
+        if (!f.shadowStarted) {
+          f.shadowStarted = true;
+          let shadowRootEl: ShadowRoot | null = null;
+          if (isElement(f.n) && (shadowRootEl = dom.shadowRoot(f.n))) {
+            f.queue = Array.from(dom.childNodes(shadowRootEl));
+            f.i = 0;
+            f.parent = shadowRootEl;
+            continue;
+          }
+        }
+        stack.pop();
+        finish(f.n, f.sn, f.options, f.markShadow);
+      }
+      done = true;
+      return true;
+    } catch (err) {
+      failed = true;
+      throw err;
+    } finally {
+      walking = false;
+    }
+  };
   open(n, root, rootOptions, false);
-  while (stack.length) {
-    const f = stack[stack.length - 1];
-    if (f.i < f.queue.length) {
-      const child = f.queue[f.i++];
-      // listed when the parent was visited; the page may have moved it since
-      if (seen.has(child) || dom.parentNode(child) !== f.parent) continue;
-      seen.add(child);
-      const head = serializeNodeHead(child, f.childOptions);
-      if (head) {
-        (f.sn as { childNodes: serializedNodeWithId[] }).childNodes.push(
-          head.serializedNode,
-        );
-        const shadowChild =
-          f.parent !== f.n && isNativeShadowDom(f.parent as ShadowRoot);
-        open(child, head, f.childOptions, shadowChild);
-      }
-      if (slicer.shouldYield()) {
-        await slicer.yieldSlice();
-        recheckBlocked();
-      }
-      continue;
-    }
-    if (!f.shadowStarted) {
-      f.shadowStarted = true;
-      let shadowRootEl: ShadowRoot | null = null;
-      if (isElement(f.n) && (shadowRootEl = dom.shadowRoot(f.n))) {
-        f.queue = Array.from(dom.childNodes(shadowRootEl));
-        f.i = 0;
-        f.parent = shadowRootEl;
-        continue;
-      }
-    }
-    stack.pop();
-    finish(f.n, f.sn, f.options, f.markShadow);
+  slicer.control?.(() => {
+    if (done) return root.serializedNode;
+    forced = true;
+    if (walking || failed) return null;
+    // the page ran since the last slice, as after any yield
+    recheckBlocked();
+    walk();
+    return root.serializedNode;
+  });
+  while (!walk()) {
+    await slicer.yieldSlice();
+    // finishNow() ran while the page had its turn
+    if (done) break;
+    recheckBlocked();
   }
   return root.serializedNode;
 }

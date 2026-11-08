@@ -7,7 +7,7 @@ import {
   createMirror,
 } from 'rrweb-snapshot';
 import { getIFrameContentWindow } from 'rrdom';
-import { initObservers, mutationBuffers } from './observer';
+import { getEventTarget, initObservers, mutationBuffers } from './observer';
 import {
   flushCoalescedMutations,
   hasCoalescedMutations,
@@ -37,6 +37,7 @@ import {
   type adoptedStyleSheetParam,
   type IWindow,
   type serializedElementNodeWithId,
+  type serializedNodeWithId,
 } from '@rrweb/types';
 import type { CrossOriginIframeMessageEventContent } from '../types';
 import {
@@ -108,7 +109,40 @@ const mirror = createMirror();
 
 /** Sliced snapshot (RR-017): wall-time cap after which the rest runs at once. */
 const SLICE_MAX_WALL_MS = 5000;
-let activeSlicing: { cancelled: boolean } | null = null;
+let activeSlicing: { cancelled: boolean; finish: () => void } | null = null;
+/**
+ * Events whose recorded target must already have a mirror id. While a sliced
+ * snapshot runs, a node the walk has not reached yet, or one added under an
+ * already visited parent (the mutation buffers are locked), has none, and
+ * the observer would record id -1, which the replayer drops. Such an event
+ * finishes the snapshot synchronously first (window capture phase, before
+ * rrweb's own document listeners), so it gets its real id.
+ */
+const SLICE_FINISH_EVENTS = [
+  'pointerdown',
+  'pointerup',
+  'mousedown',
+  'mouseup',
+  'click',
+  'dblclick',
+  'contextmenu',
+  'touchstart',
+  'touchmove',
+  'touchend',
+  'touchcancel',
+  'mousemove',
+  'drag',
+  'focus',
+  'blur',
+  'input',
+  'change',
+  'scroll',
+  'play',
+  'pause',
+  'seeked',
+  'volumechange',
+  'ratechange',
+];
 /** Rejection that ends a sliced snapshot whose recording was stopped. */
 const SLICE_CANCELLED = new Error('rrweb: snapshot cancelled by stop()');
 
@@ -279,10 +313,12 @@ function record<T = eventWithTime>(
   };
   // Sliced full snapshot in progress (snapshotSliceMs): every event recorded
   // meanwhile waits here, stamped, and goes out right after the FullSnapshot.
-  let slicing: {
+  type SliceState = {
     queue: Array<[eventWithTime, boolean | undefined]>;
     cancelled: boolean;
-  } | null = null;
+    finish: () => void;
+  };
+  let slicing: SliceState | null = null;
   // Panopticon: set by the stop function. Nothing this recording set up
   // (observers, snapshot load hooks, a sliced snapshot still walking) may
   // emit or serialize after stop().
@@ -636,8 +672,19 @@ function record<T = eventWithTime>(
    * the mutation buffers locked, as for the synchronous snapshot; events
    * recorded meanwhile are queued, so the stream is still Meta, FullSnapshot,
    * the queued events in order, then the mutations buffered while slicing.
-   * The FullSnapshot carries the Meta's timestamp: the serialized DOM is the
-   * page as of the slices, and every queued event happened after that start.
+   * The Meta and the FullSnapshot are dispatched together, in one
+   * synchronous step, once the walk is done: a recorder flush between them
+   * would put them in two upload batches, where they can sort FullSnapshot
+   * first (same timestamp) and seeks lose the keyframe. Both carry the
+   * timestamp of the start: the serialized DOM is the page as of the slices,
+   * and every queued event happened after that start.
+   *
+   * The walk finishes synchronously (same output, no more yields) when
+   * flushMutations() is called (the recorder's unload and buffer-to-session
+   * paths), and when a user event targets a node without a mirror id (see
+   * SLICE_FINISH_EVENTS). stop() still cancels it: a stopped recording reads
+   * no further node (privacy: the page may already be a route that must not
+   * be recorded).
    */
   const takeFullSnapshotSliced = (isCheckout: boolean, beforeLock?: () => void) => {
     if (slicing) return; // a checkout asked for mid-slice: this one covers it
@@ -650,10 +697,27 @@ function record<T = eventWithTime>(
       },
       timestamp: nowTimestamp(),
     } as eventWithTime;
-    dispatch(meta, isCheckout);
-    const state: NonNullable<typeof slicing> = { queue: [], cancelled: false };
+    let finishNow: (() => serializedNodeWithId | null) | undefined;
+    let completed = false;
+    const state: SliceState = {
+      queue: [],
+      cancelled: false,
+      finish: () => {
+        if (completed || state.cancelled) return;
+        const node = finishNow?.();
+        if (node) complete(node);
+      },
+    };
     slicing = state;
     activeSlicing = state;
+    const onUserEvent = (event: Event) => {
+      const target = getEventTarget(event);
+      if (target && !mirror.hasNode(target as Node)) state.finish();
+    };
+    const listenerOptions = { capture: true, passive: true };
+    SLICE_FINISH_EVENTS.forEach((type) =>
+      window.addEventListener(type, onUserEvent, listenerOptions),
+    );
 
     stylesheetManager.reset();
     shadowDomManager.init();
@@ -669,6 +733,43 @@ function record<T = eventWithTime>(
           start: sliceStart,
           end: performance.now(),
         });
+    };
+    const complete = (node: serializedNodeWithId | null) => {
+      if (completed) return;
+      completed = true;
+      SLICE_FINISH_EVENTS.forEach((type) =>
+        window.removeEventListener(type, onUserEvent, listenerOptions),
+      );
+      endSlice();
+      if (bench)
+        performance.measure('pano:rec:snapshot-wall', {
+          start,
+          end: performance.now(),
+        });
+      if (slicing === state) slicing = null;
+      if (activeSlicing === state) activeSlicing = null;
+      if (state.cancelled) return;
+      dispatch(meta, isCheckout);
+      if (!node) {
+        console.warn('Failed to snapshot the document');
+      } else {
+        dispatch({
+          type: EventType.FullSnapshot,
+          data: { node, initialOffset: getWindowScroll(window) },
+          timestamp: meta.timestamp,
+        } as eventWithTime);
+      }
+      for (const [e, c] of state.queue) dispatch(e, c);
+      mutationBuffers.forEach((buf) => buf.unlock());
+      if (
+        node &&
+        document.adoptedStyleSheets &&
+        document.adoptedStyleSheets.length > 0
+      )
+        stylesheetManager.adoptStyleSheets(
+          document.adoptedStyleSheets,
+          mirror.getId(document),
+        );
     };
     void snapshotSliced(document, snapshotOptions(), {
       // Starvation guard: past 5 s of wall time the rest runs in one go.
@@ -689,41 +790,18 @@ function record<T = eventWithTime>(
           sliceStart = performance.now();
         });
       },
+      control: (f) => {
+        finishNow = f;
+      },
     })
       .catch((err) => {
         if (err !== SLICE_CANCELLED) console.warn(err);
         return null;
       })
       .then((node) => {
-        endSlice();
-        if (bench)
-          performance.measure('pano:rec:snapshot-wall', {
-            start,
-            end: performance.now(),
-          });
-        if (slicing === state) slicing = null;
-        if (activeSlicing === state) activeSlicing = null;
-        if (state.cancelled) return;
-        if (!node) {
-          console.warn('Failed to snapshot the document');
-        } else {
-          dispatch({
-            type: EventType.FullSnapshot,
-            data: { node, initialOffset: getWindowScroll(window) },
-            timestamp: meta.timestamp,
-          } as eventWithTime);
-        }
-        for (const [e, c] of state.queue) dispatch(e, c);
-        mutationBuffers.forEach((buf) => buf.unlock());
-        if (
-          node &&
-          document.adoptedStyleSheets &&
-          document.adoptedStyleSheets.length > 0
-        )
-          stylesheetManager.adoptStyleSheets(
-            document.adoptedStyleSheets,
-            mirror.getId(document),
-          );
+        // finished synchronously already: the rejected yield is moot
+        if (completed) return;
+        complete(node);
       });
   };
   _takeFullSnapshot = takeFullSnapshot;
@@ -919,7 +997,8 @@ function record<T = eventWithTime>(
     return () => {
       if (slicing) slicing.cancelled = true;
       if (activeSlicing) {
-        // stopped mid-snapshot: nothing of it is emitted
+        // stopped mid-snapshot: nothing of it is emitted (the recorder calls
+        // flushMutations() first where the snapshot must be kept)
         activeSlicing.cancelled = true;
         activeSlicing = null;
       }
@@ -972,9 +1051,13 @@ export function addCustomEvent<T>(tag: string, payload: T) {
 
 /**
  * Emit the mutations buffered for the current frame now (coalesceMutations).
- * Call before shipping events on page hide/unload.
+ * A sliced snapshot still walking finishes synchronously first, so its Meta,
+ * FullSnapshot and the events queued behind it go out too. Call before
+ * shipping events on page hide/unload, or before stop() when the recording
+ * must keep that snapshot.
  */
 export function flushMutations() {
+  activeSlicing?.finish();
   flushCoalescedMutations();
 }
 

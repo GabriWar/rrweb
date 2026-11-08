@@ -189,6 +189,39 @@ describe('rrweb-plugin-network-record', () => {
     expect(events[0].requests[0].method).toBe('POST');
   });
 
+  it('records every timing field at full precision, the URL only as the request name (Panopticon item 8 review)', () => {
+    const json = {
+      name: 'https://user:pw@example.com/secret?q=1',
+      entryType: 'resource',
+      initiatorType: 'img',
+      startTime: 12.345,
+      responseEnd: 400.125,
+      duration: 387.78,
+      domainLookupStart: 13.1,
+      connectEnd: 20.2,
+      secureConnectionStart: 15.5,
+      requestStart: 20.25,
+      responseStart: 380.06,
+      transferSize: 1234,
+      encodedBodySize: 900,
+      decodedBodySize: 2000,
+      nextHopProtocol: 'h2',
+      serverTiming: [{ name: 'db', duration: 12.5, description: 'q' }],
+    };
+    const entry = { ...json, toJSON: () => json } as unknown as PerformanceResourceTiming;
+    const events: NetworkData[] = [];
+    const win = createMockWindow({ initialEntries: [entry] });
+    const plugin = getRecordNetworkPlugin({ recordInitialRequests: true, initiatorTypes: ['img'] });
+    const cleanup = plugin.observer((data: NetworkData) => events.push(data), win, plugin.options);
+    cleanup();
+    const r = events[0].requests[0];
+    expect(r.startTime).toBe(12.345);
+    expect(r.endTime).toBe(400.125);
+    const { name: _url, ...rest } = json;
+    expect(r.timing).toEqual(rest);
+    expect(JSON.stringify(r.timing)).not.toContain('secret');
+  });
+
   it('filters initial navigation entries by initiatorTypes', () => {
     const events: NetworkData[] = [];
     const win = createMockWindow({

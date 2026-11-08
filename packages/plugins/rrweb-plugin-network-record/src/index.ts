@@ -84,6 +84,23 @@ type ObservedPerformanceEntry = (
   responseStatus?: number;
 };
 
+/**
+ * Panopticon item 8 review: every field of the entry (DNS, connect, TLS,
+ * TTFB, transfer and body sizes, protocol, server timing, ...) at full
+ * precision, except its URL, which is the request's own (sanitized)
+ * `name`. Server-Timing names and descriptions are the host's to scrub
+ * (transformRequestFn).
+ */
+function timingOf(entry: PerformanceEntry): Record<string, unknown> | undefined {
+  try {
+    const t = { ...(entry.toJSON() as Record<string, unknown>) };
+    delete t.name;
+    return t;
+  } catch {
+    return undefined;
+  }
+}
+
 function getPerformanceEntryInitiatorType(
   entry: ObservedPerformanceEntry,
 ): NetworkInitiatorType {
@@ -122,8 +139,9 @@ function initPerformanceObserver(
         entryType: entry.entryType,
         name: entry.name,
         status: 'responseStatus' in entry ? entry.responseStatus : undefined,
-        startTime: Math.round(entry.startTime),
-        endTime: Math.round(entry.responseEnd),
+        startTime: entry.startTime,
+        endTime: entry.responseEnd,
+        timing: timingOf(entry),
       })),
       isInitial: true,
     });
@@ -148,8 +166,9 @@ function initPerformanceObserver(
       requests: performanceEntries.map((entry) => ({
         initiatorType: getPerformanceEntryInitiatorType(entry),
         status: 'responseStatus' in entry ? entry.responseStatus : undefined,
-        startTime: Math.round(entry.startTime),
-        endTime: Math.round(entry.responseEnd),
+        startTime: entry.startTime,
+        endTime: entry.responseEnd,
+        timing: timingOf(entry),
         duration: entry.duration,
         entryType: entry.entryType,
         name: entry.name,
@@ -610,8 +629,9 @@ function prepareRequest(
     entryType: entry.entryType,
     name: entry.name,
     status,
-    startTime: Math.round(entry.startTime),
-    endTime: Math.round(entry.responseEnd),
+    startTime: entry.startTime,
+    endTime: entry.responseEnd,
+    timing: timingOf(entry),
     requestHeaders: networkRequest.requestHeaders,
     requestBody: networkRequest.requestBody,
     responseHeaders: networkRequest.responseHeaders,

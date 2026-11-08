@@ -15,6 +15,8 @@ export {
   IncrementalSource,
   MouseInteractions,
   ReplayerEvents,
+  type annotationData,
+  type annotationEvent,
 } from '@rrweb/types';
 
 // exports style.css from replay
@@ -31,7 +33,12 @@ export type {
 } from '@rrweb/types';
 
 export { deserializeArg } from './replay/canvas/deserialize-args';
-export { addCustomEvent, freezePage, takeFullSnapshot } from './record';
+export {
+  addAnnotation,
+  addCustomEvent,
+  freezePage,
+  takeFullSnapshot,
+} from './record';
 export type { CanvasManagerConstructorOptions } from './record';
 export { CanvasManager } from './record/observers/canvas/canvas-manager';
 

@@ -197,8 +197,13 @@ describe('sliced full snapshot (RR-017)', () => {
     page(3000);
     const events: eventWithTime[] = [];
     const stop = record({ emit: (e) => events.push(e as eventWithTime), snapshotSliceMs: 0.001 })!;
-    for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
     const b = document.getElementById('b')!;
+    // wait until the walk has serialized #b (slices hop through MessageChannel,
+    // so a fixed number of timer ticks raced it under load), but not finished
+    const walked = Date.now() + 10_000;
+    while (!record.mirror.hasNode(b) && Date.now() < walked) {
+      await new Promise((r) => setTimeout(r, 0));
+    }
     expect(record.mirror.hasNode(b)).toBe(true);
     b.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     expect(events.some((e) => e.type === EventType.FullSnapshot)).toBe(false);
@@ -208,7 +213,9 @@ describe('sliced full snapshot (RR-017)', () => {
     }
     stop();
     expect(events.map(kind).slice(0, 3)).toEqual(['4', '2', `3:${IncrementalSource.MouseInteraction}`]);
-  });
+  // ~6,000 nodes, one MessageChannel hop per slice: ~5 s under load, and
+  // the waits above allow 10 s each; vitest's 5 s default cut it short
+  }, 25_000);
 
   it('stop() during slicing emits no FullSnapshot', async () => {
     page(2000);

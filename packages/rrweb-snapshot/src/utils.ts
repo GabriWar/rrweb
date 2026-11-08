@@ -1,3 +1,15 @@
+/**
+ * Legacy shared utility module.
+ *
+ * This file currently contains helpers used by both snapshot and rebuild paths
+ * and is also part of the public API surface, re-exported from index.ts.
+ *
+ * Migration intent:
+ * - snapshot.ts should consume snapshot-domain helpers via snapshot-utils.ts
+ * - rebuild.ts should consume rebuild-domain helpers via rebuild-utils.ts
+ * - when safe, split internals into snapshot-only / rebuild-only / shared
+ *   modules while keeping this module as a compatibility shim for external users
+ */
 import type {
   idNodeMap,
   MaskInputFn,
@@ -135,13 +147,29 @@ export function stringifyStylesheet(s: CSSStyleSheet): string | null {
  * There is a bug in chrome (https://issues.chromium.org/issues/41416124) with the `all` property where we can't use `cssText` because it is wrong.
  * Instead, attempt to serialize the css string using `CSSStyleDeclaration`.
  */
+// Longhands `all` resets; one the rule doesn't declare itself carries the
+// value `all` was set to (Chromium 146+ reports getPropertyValue('all') as '').
+const ALL_PROBES = ['color', 'display', 'opacity', 'margin-top', 'font-size'];
+
+function allValue(style: CSSStyleDeclaration): string {
+  const own = style.getPropertyValue('all');
+  if (own) return own;
+  const declared = new Set(Array.prototype.slice.call(style) as string[]);
+  const probe = ALL_PROBES.find((p) => !declared.has(p));
+  return probe ? style.getPropertyValue(probe) : '';
+}
+
 export function fixAllCssProperty(rule: CSSStyleRule) {
   let styles = '';
   for (let i = 0; i < rule.style.length; i++) {
     const styleDeclaration = rule.style;
     const attribute = styleDeclaration[i];
     const isImportant = styleDeclaration.getPropertyPriority(attribute);
-    styles += `${attribute}:${styleDeclaration.getPropertyValue(attribute)}${
+    const value =
+      attribute === 'all'
+        ? allValue(styleDeclaration)
+        : styleDeclaration.getPropertyValue(attribute);
+    styles += `${attribute}:${value}${
       isImportant ? ` !important` : ''
     };`;
   }
@@ -170,8 +198,11 @@ export function stringifyRule(rule: CSSRule, sheetHref: string | null): string {
   } else if (isCSSStyleRule(rule)) {
     let cssText = rule.cssText;
     const needsSafariColonFix = rule.selectorText.includes(':');
+    // Chromium 146+ reports style.all as '' but still lists 'all' among the
+    // declared properties, and expands cssText to every longhand (~6.5 KB)
     const needsAllFix =
-      typeof rule.style['all'] === 'string' && rule.style['all'];
+      (typeof rule.style['all'] === 'string' && rule.style['all']) ||
+      Array.prototype.includes.call(rule.style, 'all');
 
     if (needsAllFix) {
       cssText = fixAllCssProperty(rule);
@@ -249,6 +280,11 @@ export class Mirror implements IMirror<Node> {
       n.childNodes.forEach((childNode) =>
         this.removeNodeFromMap(childNode as unknown as Node),
       );
+    }
+
+    const shadowRoot = dom.shadowRoot(n);
+    if (shadowRoot) {
+      this.removeNodeFromMap(shadowRoot);
     }
   }
   has(id: number): boolean {
@@ -476,6 +512,7 @@ const URL_IN_CSS_REF = /url\((?:(')([^']*)'|(")(.*?)"|([^)]*))\)/gm;
 const URL_PROTOCOL_MATCH = /^(?:[a-z+]+:)?\/\//i;
 const URL_WWW_MATCH = /^www\..*/i;
 const DATA_URI = /^(data:)([^,]*),(.*)/i;
+const BLOB_URI = /^blob:/i;
 export function absolutifyURLs(cssText: string | null, href: string): string {
   return (cssText || '').replace(
     URL_IN_CSS_REF,
@@ -495,7 +532,11 @@ export function absolutifyURLs(cssText: string | null, href: string): string {
       if (URL_PROTOCOL_MATCH.test(filePath) || URL_WWW_MATCH.test(filePath)) {
         return `url(${maybeQuote}${filePath}${maybeQuote})`;
       }
-      if (DATA_URI.test(filePath)) {
+      if (DATA_URI.test(filePath) || BLOB_URI.test(filePath)) {
+        return `url(${maybeQuote}${filePath}${maybeQuote})`;
+      }
+      if (filePath[0] === '#') {
+        // fragment-only urls refer to the current document, not the stylesheet
         return `url(${maybeQuote}${filePath}${maybeQuote})`;
       }
       if (filePath[0] === '/') {
@@ -503,8 +544,10 @@ export function absolutifyURLs(cssText: string | null, href: string): string {
           extractOrigin(href) + filePath
         }${maybeQuote})`;
       }
-      const stack = href.split('/');
-      const parts = filePath.split('/');
+      const filePathNoHash = filePath.split('#')[0];
+      const maybeHash = filePath.substring(filePathNoHash.length);
+      const stack = href.split('#')[0].split('/');
+      const parts = filePathNoHash.split('/');
       stack.pop();
       for (const part of parts) {
         if (part === '.') {
@@ -515,10 +558,14 @@ export function absolutifyURLs(cssText: string | null, href: string): string {
           stack.push(part);
         }
       }
-      return `url(${maybeQuote}${stack.join('/')}${maybeQuote})`;
+      return `url(${maybeQuote}${stack.join('/')}${maybeHash}${maybeQuote})`;
     },
   );
 }
+
+const cssNormalizeBase = '(?:/\\*[^*]*\\*/)|[\\s;]'; // whitespace
+const cssNormalizeRe = new RegExp(`${cssNormalizeBase}|\\b(0)px?`, 'g');
+const cssNormalizeReNoPx = new RegExp(cssNormalizeBase, 'g');
 
 /**
  * Intention is to normalize by remove spaces, semicolons and CSS comments
@@ -532,11 +579,9 @@ export function normalizeCssString(
    */
   _testNoPxNorm = false,
 ): string {
-  if (_testNoPxNorm) {
-    return cssText.replace(/(\/\*[^*]*\*\/)|[\s;]/g, '');
-  } else {
-    return cssText.replace(/(\/\*[^*]*\*\/)|[\s;]/g, '').replace(/0px/g, '0');
-  }
+  return _testNoPxNorm
+    ? cssText.replace(cssNormalizeReNoPx, '')
+    : cssText.replace(cssNormalizeRe, '$1');
 }
 
 /**

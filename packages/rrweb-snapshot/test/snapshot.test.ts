@@ -5,13 +5,14 @@ import { JSDOM } from 'jsdom';
 import { describe, it, expect, vi } from 'vitest';
 import {
   absoluteToStylesheet,
+  ignoreAttribute,
   serializeNodeWithId,
   transformAttribute,
   _isBlockedElement,
   needMaskingText,
 } from '../src/snapshot';
 import snapshot from '../src/snapshot';
-import { serializedNodeWithId, NodeType } from '../src/types';
+import { NodeType, type serializedNodeWithId } from '@rrweb/types';
 import { Mirror } from '../src/utils';
 
 describe('absolute url to stylesheet', () => {
@@ -33,6 +34,18 @@ describe('absolute url to stylesheet', () => {
     expect(absoluteToStylesheet('url("../a.jpg")', href)).toEqual(
       `url("http://localhost/a.jpg")`,
     );
+  });
+
+  it('can handle hashes', () => {
+    expect(absolutifyURLs('url("../a.jpg#c/d")', href + '#e/f')).toEqual(
+      `url("http://localhost/a.jpg#c/d")`,
+    );
+  });
+
+  it('leaves fragment-only references alone', () => {
+    expect(absolutifyURLs('url(#filter)', href)).toEqual(`url(#filter)`);
+    expect(absolutifyURLs(`url('#filter')`, href)).toEqual(`url('#filter')`);
+    expect(absolutifyURLs('url("#filter")', href)).toEqual(`url("#filter")`);
   });
 
   it('can handle absolute path', () => {
@@ -156,6 +169,25 @@ describe('transformAttribute()', () => {
     ).toBe('oof');
     expect(maskAttributeFn).toHaveBeenCalledTimes(1);
   });
+
+  it('can handle blob url', () => {
+    expect(
+      absolutifyURLs(
+        'url(blob:http://localhost/0d2e6c0c-5b1f-4a39-9d3f-2b5a1b8b7c11)',
+        href,
+      ),
+    ).toEqual(
+      'url(blob:http://localhost/0d2e6c0c-5b1f-4a39-9d3f-2b5a1b8b7c11)',
+    );
+    expect(
+      absolutifyURLs(
+        'background-image: url("blob:http://localhost/0d2e6c0c-5b1f-4a39-9d3f-2b5a1b8b7c11");',
+        href,
+      ),
+    ).toEqual(
+      'background-image: url("blob:http://localhost/0d2e6c0c-5b1f-4a39-9d3f-2b5a1b8b7c11");',
+    );
+  });
 });
 
 describe('isBlockedElement()', () => {
@@ -186,6 +218,23 @@ describe('isBlockedElement()', () => {
     expect(
       subject('<div data-rr-block />', { blockSelector: '[data-rr-block]' }),
     ).toEqual(true);
+  });
+});
+
+describe('ignoreAttribute()', () => {
+  it('ignores autoplay on lowercase media tag names', () => {
+    expect(ignoreAttribute('video', 'autoplay', '')).toEqual(true);
+    expect(ignoreAttribute('audio', 'autoplay', '')).toEqual(true);
+  });
+
+  it('ignores autoplay regardless of attribute-name case', () => {
+    expect(ignoreAttribute('video', 'AUTOPLAY', '')).toEqual(true);
+    expect(ignoreAttribute('audio', 'AutoPlay', '')).toEqual(true);
+  });
+
+  it('does not ignore other attributes or other elements', () => {
+    expect(ignoreAttribute('video', 'src', '')).toEqual(false);
+    expect(ignoreAttribute('div', 'autoplay', '')).toEqual(false);
   });
 });
 

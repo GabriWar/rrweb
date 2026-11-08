@@ -1,6 +1,11 @@
 import path from 'path';
 import glob from 'fast-glob';
-import { Plugin } from 'vite';
+import {
+  defaultClientConditions,
+  defineConfig,
+  mergeConfig,
+  Plugin,
+} from 'vite';
 import config from '../../vite.config.default';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 import { emitDts, EmitDtsConfig } from 'svelte2tsx';
@@ -29,6 +34,8 @@ async function generateDts(inputPath: string) {
 function viteSvelteDts(): Plugin {
   return {
     name: 'vite-plugin-svelte-dts',
+    // build only: under vitest there is no input and nothing to emit
+    apply: 'build',
     async buildStart(options) {
       console.log('Generating .d.ts files for Svelte components...');
 
@@ -59,6 +66,21 @@ function viteSvelteDts(): Plugin {
   };
 }
 
-export default config(path.resolve(__dirname, 'src/main.ts'), 'rrwebPlayer', {
+const baseConfig = config(path.resolve(__dirname, 'src/main.ts'), 'rrwebPlayer', {
   plugins: [viteSvelteDts(), svelte()],
+  // the rrwebPlayer UMD global is the Player constructor (upstream rrweb)
+  umdExport: 'default',
 });
+
+// Svelte resolves to its browser runtime (mount, lifecycle) in tests and
+// builds, not the server one (upstream rrweb).
+export default defineConfig((env) =>
+  mergeConfig(typeof baseConfig === 'function' ? baseConfig(env) : baseConfig, {
+    resolve: {
+      conditions: [...defaultClientConditions],
+    },
+    test: {
+      setupFiles: ['./test/setup.ts'],
+    },
+  }),
+);

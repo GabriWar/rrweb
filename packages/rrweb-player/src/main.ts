@@ -19,3 +19,5 @@ export class Player extends Compat {
 }
 
 export default Player;
+
+export type { annotationData } from '@rrweb/types';

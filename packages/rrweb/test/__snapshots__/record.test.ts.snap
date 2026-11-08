@@ -1120,15 +1120,6 @@ exports[`record > captures adopted stylesheets in shadow doms and iframe 1`] = `
           }
         },
         {
-          \\"parentId\\": 26,
-          \\"nextId\\": null,
-          \\"node\\": {
-            \\"type\\": 3,
-            \\"textContent\\": \\"span in shadow dom 2\\",
-            \\"id\\": 27
-          }
-        },
-        {
           \\"parentId\\": 16,
           \\"nextId\\": 26,
           \\"node\\": {
@@ -1136,16 +1127,25 @@ exports[`record > captures adopted stylesheets in shadow doms and iframe 1`] = `
             \\"tagName\\": \\"div\\",
             \\"attributes\\": {},
             \\"childNodes\\": [],
-            \\"id\\": 28,
+            \\"id\\": 27,
             \\"isShadow\\": true
           }
         },
         {
-          \\"parentId\\": 28,
+          \\"parentId\\": 27,
           \\"nextId\\": null,
           \\"node\\": {
             \\"type\\": 3,
             \\"textContent\\": \\"div in shadow dom 2\\",
+            \\"id\\": 28
+          }
+        },
+        {
+          \\"parentId\\": 26,
+          \\"nextId\\": null,
+          \\"node\\": {
+            \\"type\\": 3,
+            \\"textContent\\": \\"span in shadow dom 2\\",
             \\"id\\": 29
           }
         }
@@ -1407,18 +1407,18 @@ exports[`record > captures inserted style text nodes correctly 1`] = `
                   {
                     \\"type\\": 2,
                     \\"tagName\\": \\"style\\",
-                    \\"attributes\\": {},
+                    \\"attributes\\": {
+                      \\"_cssText\\": \\"div { color: red; }/* rr_split */section { color: blue; }\\"
+                    },
                     \\"childNodes\\": [
                       {
                         \\"type\\": 3,
-                        \\"textContent\\": \\"div { color: red; }\\",
-                        \\"isStyle\\": true,
+                        \\"textContent\\": \\"\\",
                         \\"id\\": 6
                       },
                       {
                         \\"type\\": 3,
-                        \\"textContent\\": \\"section { color: blue; }\\",
-                        \\"isStyle\\": true,
+                        \\"textContent\\": \\"\\",
                         \\"id\\": 7
                       }
                     ],
@@ -1481,7 +1481,6 @@ exports[`record > captures inserted style text nodes correctly 1`] = `
           \\"node\\": {
             \\"type\\": 3,
             \\"textContent\\": \\"h1 { color: pink; }\\",
-            \\"isStyle\\": true,
             \\"id\\": 12
           }
         },
@@ -1491,7 +1490,6 @@ exports[`record > captures inserted style text nodes correctly 1`] = `
           \\"node\\": {
             \\"type\\": 3,
             \\"textContent\\": \\"span { color: orange; }\\",
-            \\"isStyle\\": true,
             \\"id\\": 13
           }
         }

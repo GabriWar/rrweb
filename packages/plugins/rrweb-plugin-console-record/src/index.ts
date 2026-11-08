@@ -192,7 +192,7 @@ function initLogObserver(
       level,
       (original: (...args: Array<unknown>) => void) => {
         return (...args: Array<unknown>) => {
-          original.apply(this, args);
+          original.apply(_logger, args);
           if (inStack) {
             // If we are already in a stack this means something from the following code is calling a console method
             // likely a proxy method called from stringify. We don't want to log this as it will cause an infinite loop
@@ -224,7 +224,7 @@ function initLogObserver(
               });
             }
           } catch (error) {
-            original('rrweb logger error:', error, ...args);
+            original.apply(_logger, ['rrweb logger error:', error, ...args]);
           } finally {
             inStack = false;
           }

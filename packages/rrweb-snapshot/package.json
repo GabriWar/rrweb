@@ -73,6 +73,6 @@
   "dependencies": {
     "@rrweb/types": "2.42.0",
     "@rrweb/utils": "2.42.0",
-    "postcss": "^8.4.38"
+    "postcss": "^8.5.32"
   }
 }

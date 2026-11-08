@@ -1,7 +1,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { vi } from 'vitest';
-import type { Page } from 'puppeteer';
+import { chromium, firefox, webkit } from 'playwright';
+import type { Browser, Page } from 'playwright';
 import type { eventWithTime } from '@rrweb/types';
 import type { recordOptions } from '../../src/types';
 import {
@@ -90,17 +91,25 @@ function avg(v: number[]): number {
   return v.reduce((prev, cur) => prev + cur, 0) / v.length;
 }
 
-describe('benchmark: mutation observer', () => {
+describe(`benchmark: mutation observer [${browserName}]`, () => {
   vi.setConfig({ testTimeout: 240000 });
-  let page: ISuite['page'];
-  let browser: ISuite['browser'];
-  let server: ISuite['server'];
+  let page: Page;
+  let browser: Browser;
+  let server: Awaited<ReturnType<typeof startServer>>;
 
   beforeAll(async () => {
     server = await startServer();
-    browser = await launchPuppeteer({
-      dumpio: true,
-      headless: 'new',
+    browser = await browserType.launch({
+      headless: true,
+      ...(isChromium
+        ? {
+            executablePath: process.env.BENCH_EXECUTABLE || undefined,
+            args: [
+              '--disable-web-security',
+              '--disable-features=BlockInsecurePrivateNetworkRequests',
+            ],
+          }
+        : {}),
     });
   });
 
@@ -119,7 +128,6 @@ describe('benchmark: mutation observer', () => {
   };
 
   const addRecordingScript = async (page: Page) => {
-    // const scriptUrl = `${getServerURL(server)}/rrweb-1.1.3.js`;
     const scriptUrl = `${getServerURL(server)}/rrweb.umd.cjs`;
     await page.evaluate((url) => {
       const scriptEl = document.createElement('script');
@@ -184,8 +192,9 @@ describe('benchmark: mutation observer', () => {
         )) as number;
       };
 
-      // generate profile.json file
-      const profileFilename = `profile-${new Date().toISOString()}.json`;
+      // A CPU-throttled, traced warm-up run whose duration is discarded; it
+      // produces a devtools timeline profile. Chromium-only (needs CDP).
+      const profileFilename = `profile-${browserName}-${new Date().toISOString()}.json`;
       const tempDirectory = path.resolve(path.join(__dirname, '../../temp'));
       fs.mkdirSync(tempDirectory, { recursive: true });
       const profilePath = path.resolve(tempDirectory, profileFilename);
@@ -228,12 +237,13 @@ describe('benchmark: mutation observer', () => {
 
       console.table([
         {
+          browser: browserName,
           ...suite,
           duration: avg(durations),
           durations: durations.join(', '),
         },
       ]);
-      console.log('profile: ', profilePath);
+      if (isChromium) console.log('profile: ', profilePath);
     });
   }
 });

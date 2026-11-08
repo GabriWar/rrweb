@@ -12,9 +12,11 @@ const emptyOutDir = process.env.CLEAR_DIST_DIR !== 'false';
 function minifyAndUMDPlugin({
   name,
   outDir,
+  umdExport,
 }: {
   name: LibraryOptions['name'];
   outDir: string;
+  umdExport?: 'default';
 }): Plugin {
   return {
     name: 'minify-plugin',
@@ -51,6 +53,7 @@ function minifyAndUMDPlugin({
               minify: false,
               isCss: false,
               outDir,
+              umdExport,
             });
             await buildFile({
               name,
@@ -59,6 +62,7 @@ function minifyAndUMDPlugin({
               minify: true,
               isCss: false,
               outDir,
+              umdExport,
             });
           }
         }
@@ -74,6 +78,7 @@ async function buildFile({
   minify,
   isCss,
   outDir,
+  umdExport,
 }: {
   name?: LibraryOptions['name'];
   input: string;
@@ -81,6 +86,7 @@ async function buildFile({
   outDir: string;
   minify: boolean;
   isCss: boolean;
+  umdExport?: 'default';
 }) {
   await build({
     entryPoints: [input],
@@ -90,13 +96,22 @@ async function buildFile({
     format: isCss ? undefined : ('umd' as Format),
     target: isCss ? undefined : 'es2020',
     treeShaking: !isCss,
+    // upstream rrweb: a default-export package (rrweb-player) exposes its
+    // default as the UMD global; runs before the wrapper returns the exports
+    footer:
+      umdExport === 'default'
+        ? { js: 'module.exports = module.exports.default;' }
+        : undefined,
     plugins: [
       umdWrapper({
         libraryName: name,
       }),
     ],
   });
-  const filename = output.replace(new RegExp(`^.+/(${outDir}/)`), '$1');
+  const filename = output.replace(
+    new RegExp(`^.+[/\\\\](${outDir}[/\\\\])`),
+    '$1',
+  );
   console.log(filename);
   console.log(`${filename}.map`);
 }
@@ -104,9 +119,19 @@ async function buildFile({
 export default function (
   entry: LibraryOptions['entry'],
   name: LibraryOptions['name'],
-  options?: { outputDir?: string; fileName?: string; plugins?: Plugin[] },
+  options?: {
+    outputDir?: string;
+    fileName?: string;
+    plugins?: Plugin[];
+    umdExport?: 'default';
+  },
 ) {
-  const { fileName, outputDir: outDir = 'dist', plugins = [] } = options || {};
+  const {
+    fileName,
+    outputDir: outDir = 'dist',
+    plugins = [],
+    umdExport,
+  } = options || {};
 
   let formats: LibraryFormats[] = ['es', 'cjs'];
 
@@ -159,7 +184,7 @@ export default function (
           });
         },
       }),
-      minifyAndUMDPlugin({ name, outDir }),
+      minifyAndUMDPlugin({ name, outDir, umdExport }),
       ...plugins,
     ],
   }));

@@ -27,6 +27,7 @@ import {
 import type { recordOptions } from '../types';
 import {
   EventType,
+  type annotationData,
   type eventWithoutTime,
   type eventWithTime,
   IncrementalSource,
@@ -90,6 +91,7 @@ let _wrappedEmit:
   | undefined
   | ((e: eventWithTime, isCheckout?: boolean) => void);
 let _takeFullSnapshot: undefined | ((isCheckout?: boolean) => void);
+let _freezeCanvas: undefined | (() => void);
 
 // Multiple tools (i.e. MooTools, Prototype.js) override Array.from and drop support for the 2nd parameter
 // Try to pull a clean implementation from a newly created iframe
@@ -341,16 +343,22 @@ function record<T = eventWithTime>(
   const dispatch = (e: eventWithTime, isCheckout?: boolean) => {
     if (stopped) return;
     if (
-      mutationBuffers[0]?.isFrozen() &&
       e.type !== EventType.FullSnapshot &&
       !(
         e.type === EventType.IncrementalSnapshot &&
         e.data.source === IncrementalSource.Mutation
       )
     ) {
-      // we've got a user initiated event so first we need to apply
-      // all DOM changes that have been buffering during paused state
-      mutationBuffers.forEach((buf) => buf.unfreeze());
+      // we've got a user initiated event so if we've been frozen we first need
+      // to apply all DOM changes that have been buffering during paused state
+      canvasManager.unfreeze();
+      for (const buf of mutationBuffers) {
+        if (buf.isFrozen()) {
+          buf.unfreeze();
+        } else {
+          break; // just need to check one as they all get frozen together
+        }
+      }
     }
 
     if (inEmittingFrame) {
@@ -490,6 +498,7 @@ function record<T = eventWithTime>(
       errorHandler,
     },
   );
+  _freezeCanvas = () => canvasManager.freeze();
 
   const shadowDomManager: ShadowDomManagerInterface =
     typeof __RRWEB_EXCLUDE_SHADOW_DOM__ === 'boolean' &&
@@ -553,6 +562,7 @@ function record<T = eventWithTime>(
 
     shadowDomManager.init();
 
+    canvasManager.lock();
     mutationBuffers.forEach((buf) => buf.lock()); // don't allow any mirror modifications during snapshotting
     const benchStart =
       typeof __PANO_BENCH__ !== 'undefined' && __PANO_BENCH__
@@ -578,6 +588,7 @@ function record<T = eventWithTime>(
         initialOffset: getWindowScroll(window),
       },
     });
+    canvasManager.unlock();
     mutationBuffers.forEach((buf) => buf.unlock()); // generate & emit any mutations that happened during snapshotting, as can now apply against the newly built mirror
 
     // Some old browsers don't support adoptedStyleSheets.
@@ -722,6 +733,7 @@ function record<T = eventWithTime>(
     stylesheetManager.reset();
     shadowDomManager.init();
     beforeLock?.();
+    canvasManager.lock();
     mutationBuffers.forEach((buf) => buf.lock());
 
     const bench = typeof __PANO_BENCH__ !== 'undefined' && __PANO_BENCH__;
@@ -760,6 +772,7 @@ function record<T = eventWithTime>(
         } as eventWithTime);
       }
       for (const [e, c] of state.queue) dispatch(e, c);
+      canvasManager.unlock();
       mutationBuffers.forEach((buf) => buf.unlock());
       if (
         node &&
@@ -950,13 +963,26 @@ function record<T = eventWithTime>(
       );
     };
 
+    // Observers of same-origin iframe documents, stopped when the document unloads.
+    const iframeObservers = new Map<Document, listenerHandler>();
     iframeManager.addLoadListener((iframeEl) => {
       try {
-        handlers.push(observe(iframeEl.contentDocument!));
+        const doc = iframeEl.contentDocument!;
+        // Iframes are attached again on every full snapshot, but each document needs to be observed only once.
+        if (iframeObservers.has(doc)) return;
+        iframeObservers.set(doc, observe(doc));
       } catch (error) {
         // TODO: handle internal error
         console.warn(error);
       }
+    });
+    iframeManager.addUnloadListener((doc) => {
+      const stopObserving = iframeObservers.get(doc);
+      if (!stopObserving) return;
+      iframeObservers.delete(doc);
+      stopObserving();
+      shadowDomManager.removeShadowRootsIn(doc);
+      mirror.removeNodeFromMap(doc);
     });
 
     const init = () => {
@@ -1007,7 +1033,7 @@ function record<T = eventWithTime>(
       setMutationCoalescing(false);
       stopped = true;
       setAssetHook(null);
-      handlers.forEach((handler) => {
+      [...handlers, ...iframeObservers.values()].forEach((handler) => {
         try {
           handler();
         } catch (error) {
@@ -1026,8 +1052,16 @@ function record<T = eventWithTime>(
           }
         }
       });
+      iframeObservers.clear();
+      iframeManager.destroy();
       processedNodeManager.destroy();
       _takeFullSnapshot = undefined;
+      // addCustomEvent / addAnnotation throw once stopped, as upstream's
+      // `recording` flag makes them
+      _wrappedEmit = undefined;
+      _freezeCanvas = undefined;
+      shadowDomManager.reset();
+      canvasManager.reset();
       unregisterErrorHandler();
     };
   } catch (error) {
@@ -1061,7 +1095,15 @@ export function flushMutations() {
   flushCoalescedMutations();
 }
 
+export function addAnnotation(annotation: annotationData) {
+  if (!_wrappedEmit) {
+    throw new Error('please add annotation after recording started');
+  }
+  wrappedEmit({ type: EventType.Annotation, data: annotation });
+}
+
 export function freezePage() {
+  _freezeCanvas?.();
   mutationBuffers.forEach((buf) => buf.freeze());
 }
 
@@ -1078,6 +1120,8 @@ export function takeFullSnapshot(isCheckout?: boolean) {
 // For backwards compatibility - we can eventually remove this when we migrated to using the exported `mirror` & `takeFullSnapshot`
 record.mirror = mirror;
 record.takeFullSnapshot = takeFullSnapshot;
+// upstream rrweb's public annotation API (record.addAnnotation)
+record.addAnnotation = addAnnotation;
 
 export default record;
 

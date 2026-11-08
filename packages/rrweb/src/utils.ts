@@ -19,6 +19,7 @@ import {
 } from 'rrweb-snapshot';
 import type { RRNode, RRIFrameElement } from 'rrdom';
 import dom from '@rrweb/utils';
+export { nowTimestamp } from '@rrweb/utils';
 
 export function on(
   type: string,
@@ -131,15 +132,6 @@ export function hookSetter<T>(
   );
   return () => hookSetter(target, key, original || {}, true);
 }
-
-// guard against old third party libraries which redefine Date.now
-let nowTimestamp = Date.now;
-
-if (!(/*@__PURE__*/ /[1-9][0-9]{12}/.test(Date.now().toString()))) {
-  // they have already redefined it! use a fallback
-  nowTimestamp = () => new Date().getTime();
-}
-export { nowTimestamp };
 
 export function getWindowScroll(win: Window) {
   const doc = win.document;

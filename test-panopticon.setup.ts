@@ -28,3 +28,29 @@ Object.defineProperty(HTMLIFrameElement.prototype, 'contentWindow', {
     });
   },
 });
+
+/**
+ * jsdom has no HTMLIFrameElement.sandbox (DOMTokenList). Upstream rrweb's
+ * protected rebuild (#1950s, rebuild.ts assertRebuildTargetAllowed) reads it
+ * to check the replay iframe is sandboxed `allow-same-origin` only; browsers
+ * implement it. Reflect the attribute the way the DOM does, as upstream's own
+ * rebuild tests do with their mock.
+ */
+if (!('sandbox' in HTMLIFrameElement.prototype)) {
+  Object.defineProperty(HTMLIFrameElement.prototype, 'sandbox', {
+    configurable: true,
+    get(this: HTMLIFrameElement) {
+      const tokens = () =>
+        (this.getAttribute('sandbox') || '').trim().split(/\s+/).filter(Boolean);
+      return {
+        get length() {
+          return tokens().length;
+        },
+        contains: (token: string) => tokens().includes(token),
+        item: (index: number) => tokens()[index] ?? null,
+        toString: () => this.getAttribute('sandbox') || '',
+        [Symbol.iterator]: () => tokens()[Symbol.iterator](),
+      };
+    },
+  });
+}

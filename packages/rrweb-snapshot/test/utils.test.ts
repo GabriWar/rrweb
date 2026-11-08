@@ -2,7 +2,7 @@
  * @vitest-environment jsdom
  */
 import { describe, it, test, expect } from 'vitest';
-import { NodeType, serializedNode } from '../src/types';
+import { NodeType, type serializedNode } from '@rrweb/types';
 import {
   extractFileExtension,
   isNodeMetaEqual,

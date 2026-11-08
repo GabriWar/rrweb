@@ -44,7 +44,8 @@ import MutationBuffer from './mutation';
 import { callbackWrapper } from './error-handler';
 import dom, { mutationObserverCtor } from '@rrweb/utils';
 
-export const mutationBuffers: MutationBuffer[] = [];
+// one principal mutation buffer, but also one per shadowRoot/iframe on the page
+export const mutationBuffers = new Set<MutationBuffer>();
 
 // Event.path is non-standard and used in some older browsers
 type NonStandardEvent = Omit<Event, 'composedPath'> & {
@@ -71,12 +72,13 @@ export function getEventTarget(event: Event | NonStandardEvent): EventTarget | n
 export function initMutationObserver(
   options: MutationBufferParam,
   rootEl: Node,
-): MutationObserver {
+): listenerHandler {
   const mutationBuffer = new MutationBuffer();
-  mutationBuffers.push(mutationBuffer);
+  mutationBuffers.add(mutationBuffer);
   // see mutation.ts for details
   mutationBuffer.init(options);
-  const observer = new (mutationObserverCtor() as new (
+  const [ObserverCtor, releaseObserverConstructor] = mutationObserverCtor();
+  const observer = new (ObserverCtor as new (
     callback: MutationCallback,
   ) => MutationObserver)(
     callbackWrapper((mutations) => {
@@ -96,7 +98,12 @@ export function initMutationObserver(
     childList: true,
     subtree: true,
   });
-  return observer;
+  const stop = () => {
+    observer.disconnect();
+    mutationBuffers.delete(mutationBuffer);
+    releaseObserverConstructor();
+  };
+  return stop;
 }
 
 function initMoveObserver({
@@ -1073,6 +1080,7 @@ function initMediaInteractionObserver({
         const target = getEventTarget(event);
         if (
           !target ||
+          !(target instanceof HTMLMediaElement) ||
           isBlocked(
             target as Node,
             blockClass,
@@ -1083,8 +1091,7 @@ function initMediaInteractionObserver({
         ) {
           return;
         }
-        const { currentTime, volume, muted, playbackRate } =
-          target as HTMLMediaElement;
+        const { currentTime, volume, muted, playbackRate } = target;
         mediaInteractionCb({
           type,
           id: mirror.getId(target as Node),
@@ -1281,9 +1288,9 @@ export function initObservers(
 
   // Sentry: We do not use hooks, so we skip this
   // mergeHooks(o, hooks);
-  let mutationObserver: MutationObserver | undefined;
+  let stopMutationObserver: listenerHandler | undefined;
   if (o.recordDOM) {
-    mutationObserver = initMutationObserver(o, o.doc);
+    stopMutationObserver = initMutationObserver(o, o.doc);
   }
   const mousemoveHandler = initMoveObserver(o);
   const mouseInteractionHandler = initMouseInteractionObserver(o);
@@ -1324,8 +1331,7 @@ export function initObservers(
   }
 
   return callbackWrapper(() => {
-    mutationBuffers.forEach((b) => b.reset());
-    mutationObserver?.disconnect();
+    stopMutationObserver?.();
     mousemoveHandler();
     mouseInteractionHandler();
     scrollHandler();

@@ -19,6 +19,10 @@ const testableAccessors = {
     'parentElement',
     'textContent',
     'ownerDocument',
+    'firstChild',
+    'lastChild',
+    'nextSibling',
+    'previousSibling',
   ] as const,
   ShadowRoot: ['host', 'styleSheets'] as const,
   Element: ['shadowRoot', 'querySelector', 'querySelectorAll'] as const,
@@ -33,23 +37,42 @@ const testableMethods = {
 } as const;
 
 const untaintedBasePrototype: Partial<BasePrototypeCache> = {};
+const untaintedBaseIframeCleanup: Partial<
+  Record<keyof BasePrototypeCache, () => void>
+> = {};
+let mutationObserverUsers = 0;
+
+type WindowWithZone = typeof globalThis & {
+  Zone?: {
+    __symbol__?: (key: string) => string;
+  };
+};
+
+type WindowWithUnpatchedSymbols = typeof globalThis &
+  Record<string, TypeofPrototypeOwner>;
 
 /*
- When angular patches things - particularly the MutationObserver -
- they pass the `isNativeFunction` check
- That then causes performance issues
- because Angular's change detection
- doesn't like sharing a mutation observer
- Checking for the presence of the Zone object
- on global is a good-enough proxy for Angular
- to cover most cases
- (you can configure zone.js to have a different name
-  on the global object and should then manually run rrweb
-  outside the Zone)
- */
-export const isAngularZonePresent = (): boolean => {
-  return !!(globalThis as { Zone?: unknown }).Zone;
-};
+Angular zone patches many things and can pass the untainted checks below, causing performance issues
+Angular zone, puts the unpatched originals on the window, and the names for hose on the zone object.
+So, we get the unpatched versions from the window object if they exist.
+You can rename Zone, but this is a good enough proxy to avoid going to an iframe to get the untainted versions.
+see: https://github.com/angular/angular/issues/26948
+*/
+function angularZoneUnpatchedAlternative(key: keyof BasePrototypeCache) {
+  const angularUnpatchedVersionSymbol = (
+    globalThis as WindowWithZone
+  )?.Zone?.__symbol__?.(key);
+  if (
+    angularUnpatchedVersionSymbol &&
+    (globalThis as WindowWithUnpatchedSymbols)[angularUnpatchedVersionSymbol]
+  ) {
+    return (globalThis as WindowWithUnpatchedSymbols)[
+      angularUnpatchedVersionSymbol
+    ];
+  } else {
+    return undefined;
+  }
+}
 
 export function getUntaintedPrototype<T extends keyof BasePrototypeCache>(
   key: T,
@@ -57,7 +80,9 @@ export function getUntaintedPrototype<T extends keyof BasePrototypeCache>(
   if (untaintedBasePrototype[key])
     return untaintedBasePrototype[key] as BasePrototypeCache[T];
 
-  const defaultObj = globalThis[key] as TypeofPrototypeOwner;
+  const defaultObj =
+    angularZoneUnpatchedAlternative(key) ||
+    (globalThis[key] as TypeofPrototypeOwner);
   const defaultPrototype = defaultObj.prototype as BasePrototypeCache[T];
 
   // use list of testable accessors to check if the prototype is tainted
@@ -86,13 +111,14 @@ export function getUntaintedPrototype<T extends keyof BasePrototypeCache>(
       ),
   );
 
-  if (isUntaintedAccessors && isUntaintedMethods && !isAngularZonePresent()) {
+  if (isUntaintedAccessors && isUntaintedMethods) {
     untaintedBasePrototype[key] = defaultObj.prototype as BasePrototypeCache[T];
     return defaultObj.prototype as BasePrototypeCache[T];
   }
 
   try {
     const iframeEl = document.createElement('iframe');
+    iframeEl.style.display = 'none';
     document.body.appendChild(iframeEl);
     const win = iframeEl.contentWindow;
     if (!win) return defaultObj.prototype as BasePrototypeCache[T];
@@ -100,10 +126,25 @@ export function getUntaintedPrototype<T extends keyof BasePrototypeCache>(
     // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-explicit-any
     const untaintedObject = (win as any)[key]
       .prototype as BasePrototypeCache[T];
-    // cleanup
-    document.body.removeChild(iframeEl);
 
-    if (!untaintedObject) return defaultPrototype;
+    if (!untaintedObject) {
+      iframeEl.remove();
+      return defaultPrototype;
+    }
+
+    // WebKit/Safari: WebKit tears down an iframe's ScriptExecutionContext when it is
+    // detached from the DOM. MutationObserver.deliver() silently drops callbacks when
+    // m_callback->scriptExecutionContext() returns null (webkit.org/b/179224).
+    // Keep the iframe attached so its context stays live, and expose a cleanup fn.
+    const ua = navigator.userAgent;
+    if (ua.includes('Safari') && !ua.includes('Chrome')) {
+      // rr-block prevents rrweb from serializing this iframe in subsequent snapshots
+      iframeEl.classList.add('rr-block');
+      iframeEl.setAttribute('__rrwebUntaintedMutationObserver', '');
+      untaintedBaseIframeCleanup[key] = () => iframeEl.remove();
+    } else {
+      iframeEl.remove();
+    }
 
     return (untaintedBasePrototype[key] = untaintedObject);
   } catch {
@@ -196,6 +237,22 @@ export function textContent(n: Node): string | null {
   return getUntaintedAccessor('Node', n, 'textContent');
 }
 
+export function firstChild(n: Node): ChildNode | null {
+  return getUntaintedAccessor('Node', n, 'firstChild');
+}
+
+export function lastChild(n: Node): ChildNode | null {
+  return getUntaintedAccessor('Node', n, 'lastChild');
+}
+
+export function nextSibling(n: Node): ChildNode | null {
+  return getUntaintedAccessor('Node', n, 'nextSibling');
+}
+
+export function previousSibling(n: Node): ChildNode | null {
+  return getUntaintedAccessor('Node', n, 'previousSibling');
+}
+
 export function contains(n: Node, other: Node): boolean {
   return getUntaintedMethod('Node', n, 'contains')(other);
 }
@@ -229,9 +286,39 @@ export function querySelectorAll(
   return getUntaintedAccessor('Element', n, 'querySelectorAll')(selectors);
 }
 
-export function mutationObserverCtor(): (typeof MutationObserver)['prototype']['constructor'] {
-  return getUntaintedPrototype('MutationObserver').constructor;
+export function mutationObserverCtor(): [
+  (typeof MutationObserver)['prototype']['constructor'],
+  () => void,
+] {
+  const prototype = getUntaintedPrototype('MutationObserver');
+  mutationObserverUsers++;
+  let stopCalled = false;
+  return [
+    prototype.constructor,
+    () => {
+      if (stopCalled) return; // don't double decrement if *this* observer's stop() is called more than once
+      stopCalled = true;
+      if (--mutationObserverUsers !== 0) return;
+      const cleanup = untaintedBaseIframeCleanup['MutationObserver'];
+      if (!cleanup) return;
+      try {
+        cleanup();
+      } finally {
+        delete untaintedBasePrototype['MutationObserver'];
+        delete untaintedBaseIframeCleanup['MutationObserver'];
+      }
+    },
+  ];
 }
+
+// guard against old third party libraries which redefine Date.now
+let nowTimestamp = Date.now;
+
+if (!(/*@__PURE__*/ /[1-9][0-9]{12}/.test(Date.now().toString()))) {
+  // they have already redefined it! use a fallback
+  nowTimestamp = () => new Date().getTime();
+}
+export { nowTimestamp };
 
 // copy from https://github.com/getsentry/sentry-javascript/blob/b2109071975af8bf0316d3b5b38f519bdaf5dc15/packages/utils/src/object.ts
 export function patch(
@@ -282,6 +369,10 @@ export default {
   parentNode,
   parentElement,
   textContent,
+  firstChild,
+  lastChild,
+  nextSibling,
+  previousSibling,
   contains,
   getRootNode,
   host,
@@ -289,6 +380,7 @@ export default {
   shadowRoot,
   querySelector,
   querySelectorAll,
-  mutationObserver: mutationObserverCtor,
+  nowTimestamp,
+  mutationObserverCtor,
   patch,
 };

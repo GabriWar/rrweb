@@ -383,4 +383,5 @@ export default {
   nowTimestamp,
   mutationObserverCtor,
   patch,
+  getUntaintedPrototype,
 };

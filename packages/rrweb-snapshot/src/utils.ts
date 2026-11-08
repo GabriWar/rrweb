@@ -57,7 +57,7 @@ export function isNativeShadowDom(shadowRoot: ShadowRoot): boolean {
  * @param cssText - output of `CSSStyleRule.cssText`
  * @returns `cssText` with browser inconsistencies fixed.
  */
-function fixBrowserCompatibilityIssuesInCSS(cssText: string): string {
+export function fixBrowserCompatibilityIssuesInCSS(cssText: string): string {
   /**
    * Chrome outputs `-webkit-background-clip` as `background-clip` in `CSSStyleRule.cssText`.
    * But then Chrome ignores `background-clip` as css input.

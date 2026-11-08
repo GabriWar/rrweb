@@ -40,6 +40,8 @@ import {
   clearTimeout,
   getIFrameContentDocument,
   getIFrameContentWindow,
+  stringifyRule,
+  fixBrowserCompatibilityIssuesInCSS,
 } from './utils';
 import dom from '@rrweb/utils';
 
@@ -2190,8 +2192,12 @@ export type FrozenDocument = {
   iframeDoc: Set<Node>;
   custom: Map<string, boolean>;
   sheets: Map<Node, CSSStyleSheet | null>;
-  /** CSSOM text read before a change the page made after the freeze */
+  /** CSSOM text as of the freeze ('' when unreadable) */
   sheetText: Map<CSSStyleSheet, string>;
+  /** base URL each sheet's rules resolve against, as of the freeze */
+  sheetHref: Map<CSSStyleSheet, string | null>;
+  /** a sheet being stringified rule by rule across slices */
+  job: { sheet: CSSStyleSheet; rules: CSSRule[]; i: number; parts: string[] } | null;
   canvas: Map<
     Node,
     { url: string | null | undefined; target?: attributes }
@@ -2215,23 +2221,60 @@ export function noteSheetMutation(sheet: CSSStyleSheet | null | undefined): void
   if (!sheet || !walkingFrozen.size) return;
   let root: CSSStyleSheet = sheet;
   for (let i = 0; root.parentStyleSheet && i < 32; i++) root = root.parentStyleSheet;
-  for (const f of walkingFrozen) {
-    if (f.sheetText.has(root)) continue;
-    for (const s of f.sheets.values())
-      if (s === root) {
-        try {
-          f.sheetText.set(root, stringifyStylesheet(root) || '');
-        } catch {
-          // unreadable (cross-origin): the walk reads nothing either
-        }
-        break;
-      }
-  }
+  for (const f of walkingFrozen)
+    if (!f.sheetText.has(root) && f.sheetHref.has(root)) frozenSheetText(f, root);
 }
 
+/** The base URL stringifyStylesheet() resolves a sheet's rules against. */
+function sheetBase(sh: CSSStyleSheet): string | null {
+  let href = sh.href;
+  if (!href && sh.ownerNode) href = (sh.ownerNode as Node).baseURI;
+  return href;
+}
+
+/** A frozen sheet's text: stringifyStylesheet() as of the freeze. */
 function frozenSheetText(f: FrozenDocument, sheet: CSSStyleSheet): string | null {
-  const t = f.sheetText.get(sheet);
-  return t !== undefined ? t || null : stringifyStylesheet(sheet);
+  let t = f.sheetText.get(sheet);
+  if (t === undefined) {
+    if (!f.job || f.job.sheet !== sheet) startSheetJob(f, sheet);
+    finishSheetJob(f, () => false);
+    t = f.sheetText.get(sheet) ?? '';
+  }
+  return t || null;
+}
+
+function startSheetJob(f: FrozenDocument, sheet: CSSStyleSheet) {
+  let rules: CSSRule[] | null = null;
+  try {
+    const r = sheet.rules || sheet.cssRules;
+    if (r) rules = Array.from(r);
+  } catch {
+    rules = null; // cross-origin: stringifyStylesheet gives null too
+  }
+  if (!rules) {
+    f.sheetText.set(sheet, '');
+    f.job = null;
+    return;
+  }
+  f.job = { sheet, rules, i: 0, parts: [] };
+}
+
+/** Stringify rules until done (true) or until `stop()` says the slice is over. */
+function finishSheetJob(f: FrozenDocument, stop: () => boolean): boolean {
+  const j = f.job;
+  if (!j) return true;
+  const href = f.sheetHref.get(j.sheet) ?? null;
+  try {
+    while (j.i < j.rules.length) {
+      j.parts.push(stringifyRule(j.rules[j.i++], href));
+      if (j.i < j.rules.length && stop()) return false;
+    }
+    f.sheetText.set(j.sheet, fixBrowserCompatibilityIssuesInCSS(j.parts.join('')));
+  } catch {
+    f.sheetText.set(j.sheet, '');
+  }
+  f.job = null;
+  return true;
 }
 
 /**
@@ -2268,6 +2311,23 @@ export function selectorMatchesOnCopy(sel: string): boolean {
 }
 
 const FROZEN_ABORT = new Error('rrweb-snapshot: page cannot be frozen');
+const SHADOW_HOSTS = new Set([
+  'article', 'aside', 'blockquote', 'body', 'div', 'footer', 'h1', 'h2', 'h3',
+  'h4', 'h5', 'h6', 'header', 'main', 'nav', 'p', 'section', 'span',
+]);
+
+/** Element.prototype.shadowRoot's getter from rrweb's untainted prototype. */
+function untaintedShadowGetter(): ((this: Element) => ShadowRoot | null) | null {
+  try {
+    const get = Object.getOwnPropertyDescriptor(
+      dom.getUntaintedPrototype('Element'),
+      'shadowRoot',
+    )?.get;
+    return (get as (this: Element) => ShadowRoot | null) || null;
+  } catch {
+    return null;
+  }
+}
 
 export function freezeDocument(
   n: Document,
@@ -2307,11 +2367,36 @@ export function freezeDocument(
     custom: new Map(),
     sheets: new Map(),
     sheetText: new Map(),
+    sheetHref: new Map(),
+    job: null,
     canvas: new Map(),
     pending: 0,
     onPixels: null,
   };
   const docSheets = Array.from(n.styleSheets);
+  // Only an element with the block class or matching the block selector can
+  // be blocked: one native query instead of a match per element.
+  let blockCandidates: Set<Element> | null = null;
+  try {
+    if (typeof o.blockClass === 'string') {
+      blockCandidates = new Set(
+        Array.from(n.getElementsByClassName(o.blockClass)),
+      );
+      if (o.blockSelector)
+        n.querySelectorAll(o.blockSelector).forEach((e) => blockCandidates!.add(e));
+    }
+  } catch {
+    blockCandidates = null; // an invalid selector: the per-element check decides
+  }
+  // the untainted shadowRoot getter, looked up once
+  let shadowGetter: ((this: Element) => ShadowRoot | null) | null = null;
+  const probe = n.documentElement || n.body;
+  if (probe) {
+    dom.shadowRoot(probe);
+    shadowGetter = untaintedShadowGetter();
+  }
+  const shadowOf = (el: Element): ShadowRoot | null =>
+    shadowGetter ? shadowGetter.call(el) : dom.shadowRoot(el);
   // phase 1: read only (nothing changes if the page cannot be frozen)
   const visit = (node: Node, skip: boolean, keepWS: boolean) => {
     const k = live.length;
@@ -2342,8 +2427,11 @@ export function freezeDocument(
         kind.push(!keepWS && (captured || !(node.textContent || '').trim().length) ? 2 : 1);
       } else if (t === node.ELEMENT_NODE) {
         const el = node as HTMLElement;
-        if (dom.shadowRoot(el)) throw FROZEN_ABORT;
-        const tagName = getValidTagName(el);
+        // only custom elements and these can host a shadow root
+        // (DOM attachShadow's valid shadow host names)
+        if ((el.localName.includes('-') || SHADOW_HOSTS.has(el.localName)) && shadowOf(el))
+          throw FROZEN_ABORT;
+        const tagName = el.localName.includes(':') || el.localName !== el.localName.toLowerCase() ? getValidTagName(el) : (el.localName as Lowercase<string>);
         let excluded = false;
         if (tagName === 'script' || tagName === 'link' || tagName === 'meta') {
           const a: attributes = {};
@@ -2358,7 +2446,11 @@ export function freezeDocument(
           kind.push(2);
         } else {
           kind.push(1);
-          const needBlock = _isBlockedElement(el, o.blockClass, o.blockSelector, o.unblockSelector);
+          const needBlock =
+            blockCandidates === null
+              ? _isBlockedElement(el, o.blockClass, o.blockSelector, o.unblockSelector)
+              : blockCandidates.has(el) &&
+                _isBlockedElement(el, o.blockClass, o.blockSelector, o.unblockSelector);
           blocked[k] = needBlock;
           if (el.scrollLeft || el.scrollTop)
             f.scroll.set(el, { scrollLeft: el.scrollLeft, scrollTop: el.scrollTop });
@@ -2384,10 +2476,14 @@ export function freezeDocument(
           } else if (tagName === 'iframe') {
             if (getIFrameContentDocument(el as HTMLIFrameElement)) f.iframeDoc.add(el);
           } else if (tagName === 'style') {
-            f.sheets.set(el, (el as HTMLStyleElement).sheet as CSSStyleSheet | null);
+            const sh = (el as HTMLStyleElement).sheet as CSSStyleSheet | null;
+            f.sheets.set(el, sh);
+            if (sh) f.sheetHref.set(sh, sheetBase(sh));
           } else if (tagName === 'link' && o.inlineStylesheet) {
             const href = (el as HTMLLinkElement).href;
-            f.sheets.set(el, docSheets.find((sh) => sh.href === href) || null);
+            const sh = docSheets.find((x) => x.href === href) || null;
+            f.sheets.set(el, sh);
+            if (sh) f.sheetHref.set(sh, sheetBase(sh));
           } else if (tagName === 'head' && slim.headWhitespace) {
             childWS = false;
           }
@@ -2398,7 +2494,7 @@ export function freezeDocument(
               f.custom.set(tagName, false);
             }
           }
-          tails.push(k);
+          if (tagName === 'iframe' || tagName === 'img' || tagName === 'link') tails.push(k);
         }
         if (excluded) childSkip = true;
       } else kind.push(0); // not serialized by rrweb either
@@ -2434,14 +2530,20 @@ export function freezeDocument(
     f.shells.push(shell);
     o.mirror.add(node, shell);
     if (kind[k] === 2) continue;
-    if (o.onSerialize) o.onSerialize(node);
-    if (node.nodeType === node.ELEMENT_NODE && getValidTagName(node as HTMLElement) === 'canvas' && o.recordCanvas && !blocked[k])
+    // the recorder's onSerialize registers iframes, stylesheet links and
+    // shadow hosts (none here: those pages are not frozen); it does
+    // nothing for any other node
+    if (o.onSerialize && node.nodeType === node.ELEMENT_NODE) {
+      const ln = (node as Element).localName;
+      if (ln === 'iframe' || ln === 'link') o.onSerialize(node);
+    }
+    if (o.recordCanvas && !blocked[k] && (node as Element).localName === 'canvas')
       freezeCanvas(f, node as HTMLCanvasElement, o.dataURLOptions || {});
   }
   // load hooks after the children, as serializeNodeTail runs them
   for (const k of tails) {
     const el = live[k] as HTMLElement;
-    const tagName = getValidTagName(el);
+    const tagName = el.localName;
     if (tagName !== 'iframe' && tagName !== 'img' && tagName !== 'link') continue;
     const shell = f.shells[k]!;
     Object.assign(shell, {
@@ -2538,6 +2640,16 @@ export async function snapshotSliced(
         if (fr.i >= fr.kids.length) {
           stack.pop();
           continue;
+        }
+        // a stylesheet's rules are stringified in slices of their own before
+        // its <style>/<link> is serialized (a large sheet is the longest
+        // single piece of a snapshot); a CSSOM change meanwhile finishes it
+        // first (noteSheetMutation)
+        const sheet = f.sheets.get(f.live[fr.k]);
+        if (sheet && !f.sheetText.has(sheet)) {
+          if (!f.job || f.job.sheet !== sheet) startSheetJob(f, sheet);
+          if (!finishSheetJob(f, () => !forced && slicer.shouldYield())) return false;
+          if (!forced && slicer.shouldYield()) return false;
         }
         const c = fr.kids[fr.i++];
         const k = fr.k;

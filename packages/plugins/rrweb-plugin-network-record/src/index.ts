@@ -269,9 +269,54 @@ function stringifyFormData(body: FormData) {
   return searchParams.toString();
 }
 
+/**
+ * Panopticon item 8: bodies are recorded byte for byte. Bytes that are
+ * valid UTF-8 are kept as exactly that text (a leading BOM included), any
+ * other bytes as base64: a binary body is neither a placeholder nor a
+ * lossy decode.
+ */
+const utf8 =
+  typeof TextDecoder !== 'undefined'
+    ? new TextDecoder('utf-8', { fatal: true, ignoreBOM: true })
+    : null;
+
+function bytesToBody(bytes: Uint8Array): NetworkBody {
+  if (utf8) {
+    try {
+      return utf8.decode(bytes);
+    } catch {
+      // not UTF-8: base64 below
+    }
+  }
+  let s = '';
+  for (let i = 0; i < bytes.length; i += 0x8000)
+    s += String.fromCharCode.apply(
+      null,
+      bytes.subarray(i, i + 0x8000) as unknown as number[],
+    );
+  return { base64: btoa(s) };
+}
+
+function blobBytes(blob: Blob): Promise<ArrayBuffer> {
+  if (typeof blob.arrayBuffer === 'function') return blob.arrayBuffer();
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as ArrayBuffer);
+    reader.onerror = () => reject(reader.error);
+    reader.readAsArrayBuffer(blob);
+  });
+}
+
+function readBlob(blob: Blob): Promise<NetworkBody> {
+  return blobBytes(blob).then(
+    (b) => bytesToBody(new Uint8Array(b)),
+    (error: unknown) => `[rrweb/network] Failed to read body: ${String(error)}`,
+  );
+}
+
 function readXhrBody(
   body: Document | XMLHttpRequestBodyInit | unknown | null | undefined,
-): NetworkBody {
+): NetworkBody | Promise<NetworkBody> {
   if (body === undefined || body === null) {
     return null;
   }
@@ -288,13 +333,15 @@ function readXhrBody(
     return body.textContent;
   }
   if (typeof Blob !== 'undefined' && body instanceof Blob) {
-    return `[rrweb/network] Cannot synchronously read body of type ${body.constructor.name}`;
+    return readBlob(body);
   }
-  if (
-    body instanceof ArrayBuffer ||
-    ArrayBuffer.isView(body as ArrayBufferView)
-  ) {
-    return `[rrweb/network] Cannot read binary body`;
+  // decoded now: the bytes as of send() / the response
+  if (body instanceof ArrayBuffer) {
+    return bytesToBody(new Uint8Array(body));
+  }
+  if (ArrayBuffer.isView(body as ArrayBufferView)) {
+    const v = body as ArrayBufferView;
+    return bytesToBody(new Uint8Array(v.buffer, v.byteOffset, v.byteLength));
   }
   try {
     return JSON.stringify(body);
@@ -303,27 +350,24 @@ function readXhrBody(
   }
 }
 
-async function readFetchBody(requestOrResponse: Request | Response) {
-  return new Promise<NetworkBody>((resolve) => {
-    const timeout = setTimeout(
-      () => resolve('[rrweb/network] Timeout while reading body'),
-      500,
-    );
-    try {
-      requestOrResponse
-        .clone()
-        .text()
-        .then(
-          (text) => resolve(text),
-          (error: unknown) =>
-            resolve(`[rrweb/network] Failed to read body: ${String(error)}`),
-        )
-        .finally(() => clearTimeout(timeout));
-    } catch {
-      clearTimeout(timeout);
-      resolve('[rrweb/network] Failed to read body');
-    }
-  });
+/**
+ * The whole body, however long it takes (Panopticon item 8: no timeout, a
+ * slow or streamed body is recorded in full). The copy is taken now, so
+ * the page reads its own body undisturbed and is never kept waiting.
+ */
+function readFetchBody(
+  requestOrResponse: Request | Response,
+): Promise<NetworkBody> {
+  let copy: Request | Response;
+  try {
+    copy = requestOrResponse.clone();
+  } catch {
+    return Promise.resolve('[rrweb/network] Failed to read body');
+  }
+  return copy.arrayBuffer().then(
+    (b) => bytesToBody(new Uint8Array(b)),
+    (error: unknown) => `[rrweb/network] Failed to read body: ${String(error)}`,
+  );
 }
 
 async function getRequestPerformanceEntry(
@@ -395,6 +439,20 @@ function initXhrObserver(
       const xhr = this;
       const req = new Request(url, { method });
       const networkRequest: Partial<NetworkRequest> = {};
+      // bodies still being read (a Blob): the request is reported after them
+      const reads: Promise<void>[] = [];
+      const setBody = (
+        key: 'requestBody' | 'responseBody',
+        body: NetworkBody | Promise<NetworkBody>,
+      ) => {
+        if (body instanceof Promise)
+          reads.push(
+            body.then((b) => {
+              networkRequest[key] = b;
+            }),
+          );
+        else networkRequest[key] = body;
+      };
       let after: number | undefined;
       let before: number | undefined;
       const requestHeaders: NetworkHeaders = {};
@@ -411,7 +469,7 @@ function initXhrObserver(
         if (
           shouldRecordBody('request', options.recordBody, requestHeaders, url)
         ) {
-          networkRequest.requestBody = readXhrBody(body);
+          setBody('requestBody', readXhrBody(body));
         }
         after = win.performance.now();
         return originalSend(body);
@@ -439,15 +497,18 @@ function initXhrObserver(
           shouldRecordBody('response', options.recordBody, responseHeaders, url)
         ) {
           // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
-          networkRequest.responseBody = readXhrBody(xhr.response);
+          setBody('responseBody', readXhrBody(xhr.response));
         }
-        getRequestPerformanceEntry(
-          win,
-          'xmlhttprequest',
-          req.url,
-          after,
-          before,
-        )
+        Promise.all(reads)
+          .then(() =>
+            getRequestPerformanceEntry(
+              win,
+              'xmlhttprequest',
+              req.url,
+              after,
+              before,
+            ),
+          )
           .then((entry) => {
             if (!entry) {
               // https://github.com/rrweb-io/rrweb/pull/1105#issuecomment-1953808336
@@ -505,6 +566,9 @@ function initFetchObserver(
       const req = new Request(url, init);
       let res: Response | undefined;
       const networkRequest: Partial<NetworkRequest> = {};
+      // bodies are read beside the page (no await before the request goes
+      // out or before the page gets its response); reported after them
+      const reads: Promise<void>[] = [];
       let after: number | undefined;
       let before: number | undefined;
       try {
@@ -519,7 +583,11 @@ function initFetchObserver(
           !isReadableStreamBody(init?.body) &&
           shouldRecordBody('request', options.recordBody, requestHeaders, url)
         ) {
-          networkRequest.requestBody = await readFetchBody(req);
+          reads.push(
+            readFetchBody(req).then((b) => {
+              networkRequest.requestBody = b;
+            }),
+          );
         }
         after = win.performance.now();
         res = isRequest(url)
@@ -536,11 +604,18 @@ function initFetchObserver(
         if (
           shouldRecordBody('response', options.recordBody, responseHeaders, url)
         ) {
-          networkRequest.responseBody = await readFetchBody(res);
+          reads.push(
+            readFetchBody(res).then((b) => {
+              networkRequest.responseBody = b;
+            }),
+          );
         }
         return res;
       } finally {
-        getRequestPerformanceEntry(win, 'fetch', req.url, after, before)
+        Promise.all(reads)
+          .then(() =>
+            getRequestPerformanceEntry(win, 'fetch', req.url, after, before),
+          )
           .then((entry) => {
             if (!entry) {
               // https://github.com/rrweb-io/rrweb/pull/1105#issuecomment-1953808336

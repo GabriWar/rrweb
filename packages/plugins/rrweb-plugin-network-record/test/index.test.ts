@@ -64,6 +64,14 @@ async function flushMicrotasks() {
   }
 }
 
+/** Bodies are read beside the page: let those reads (real timers) finish. */
+async function settle() {
+  for (let i = 0; i < 5; i++) {
+    await new Promise((r) => setTimeout(r, 0));
+    await flushMicrotasks();
+  }
+}
+
 function createMockWindow({
   fetchImpl = async () => new Response('ok'),
   entries = [],
@@ -262,7 +270,7 @@ describe('rrweb-plugin-network-record', () => {
       headers: { 'content-type': 'text/plain' },
       body: 'hello',
     });
-    await flushMicrotasks();
+    await settle();
     cleanup();
 
     expect(events[0].requests[0].requestBody).toBe('hello');
@@ -296,5 +304,94 @@ describe('rrweb-plugin-network-record', () => {
 
     expect(downstreamInput).toBe(url);
     expect(downstreamInit).toBe(init);
+  });
+
+  describe('bodies byte for byte (Panopticon item 8)', () => {
+    const binary = new Uint8Array([0, 255, 128, 10, 192, 1, 254]);
+    const b64 = (u: Uint8Array) => Buffer.from(u).toString('base64');
+
+    function record(win: MockWindow, initiatorTypes: Array<'fetch' | 'xmlhttprequest'>) {
+      const events: NetworkData[] = [];
+      const plugin = getRecordNetworkPlugin({ recordBody: true, initiatorTypes });
+      const cleanup = plugin.observer((data: NetworkData) => events.push(data), win, plugin.options);
+      return { events, cleanup };
+    }
+
+    it('a fetch response body slower than any timeout is recorded in full, and the page gets its response first', async () => {
+      vi.useFakeTimers();
+      const url = 'https://example.com/stream';
+      let push!: ReadableStreamDefaultController<Uint8Array>;
+      const stream = new ReadableStream<Uint8Array>({ start: (c) => void (push = c) });
+      const win = createMockWindow({
+        entries: [createPerformanceEntry(url, 'fetch')],
+        fetchImpl: async () => new Response(stream, { headers: { 'content-type': 'text/plain' } }),
+      });
+      const { events, cleanup } = record(win, ['fetch']);
+      const res = await win.fetch(url);
+      expect(res.status).toBe(200);
+      push.enqueue(new TextEncoder().encode('chunk 1 '));
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(events).toHaveLength(0);
+      push.enqueue(new TextEncoder().encode('chunk 2'));
+      push.close();
+      expect(await res.text()).toBe('chunk 1 chunk 2');
+      await vi.advanceTimersByTimeAsync(0);
+      await flushMicrotasks();
+      cleanup();
+      expect(events[0].requests[0].responseBody).toBe('chunk 1 chunk 2');
+    });
+
+    it('a binary fetch response is recorded as base64 of its exact bytes, never decoded as text', async () => {
+      const url = 'https://example.com/bin';
+      const win = createMockWindow({
+        entries: [createPerformanceEntry(url, 'fetch')],
+        fetchImpl: async () => new Response(binary.slice(), { headers: { 'content-type': 'application/octet-stream' } }),
+      });
+      const { events, cleanup } = record(win, ['fetch']);
+      const res = await win.fetch(url, { method: 'POST', body: binary.slice() });
+      expect(new Uint8Array(await res.arrayBuffer())).toEqual(binary);
+      await settle();
+      cleanup();
+      const r = events[0].requests[0];
+      expect(r.responseBody).toEqual({ base64: b64(binary) });
+      expect(r.requestBody).toEqual({ base64: b64(binary) });
+    });
+
+    it('valid UTF-8 stays text, a leading BOM included', async () => {
+      const url = 'https://example.com/bom';
+      const text = '\ufeff{"a":"\u00e9\u{1f600}"}';
+      const win = createMockWindow({
+        entries: [createPerformanceEntry(url, 'fetch')],
+        fetchImpl: async () => new Response(new TextEncoder().encode(text)),
+      });
+      const { events, cleanup } = record(win, ['fetch']);
+      await win.fetch(url);
+      await settle();
+      cleanup();
+      expect(events[0].requests[0].responseBody).toBe(text);
+    });
+
+    it('XHR ArrayBuffer and Blob bodies are recorded byte for byte, not as a placeholder', async () => {
+      const url = 'https://example.com/xhr';
+      const win = createMockWindow({ entries: [createPerformanceEntry(url, 'xmlhttprequest')] });
+      const { events, cleanup } = record(win, ['xmlhttprequest']);
+      const xhr = new win.XMLHttpRequest() as unknown as {
+        open: (m: string, u: string) => void;
+        send: (b: unknown) => void;
+        complete: () => void;
+        response: unknown;
+      };
+      xhr.open('POST', url);
+      xhr.send(new Blob([binary.slice()]));
+      xhr.response = binary.slice().buffer;
+      xhr.complete();
+      for (let i = 0; i < 20; i++) await flushMicrotasks();
+      await new Promise((r) => setTimeout(r, 0));
+      await settle();
+      cleanup();
+      const r = events[0].requests[0];
+      expect(r.responseBody).toEqual({ base64: b64(binary) });
+      expect(r.requestBody).toEqual({ base64: b64(binary) });
+    });
   });
 });

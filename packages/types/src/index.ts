@@ -95,7 +95,12 @@ export type NetworkInitiatorType =
   | 'xmlhttprequest';
 
 export type NetworkHeaders = Record<string, string>;
-export type NetworkBody = string | null;
+/**
+ * Panopticon item 8: a body whose bytes are not valid UTF-8, byte for byte.
+ */
+export type NetworkBinaryBody = { base64: string };
+/** Text when the bytes are valid UTF-8 (exactly those bytes), else base64. */
+export type NetworkBody = string | NetworkBinaryBody | null;
 
 export type NetworkRequest = Omit<
   PerformanceEntry,

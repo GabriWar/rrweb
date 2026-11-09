@@ -257,3 +257,98 @@ describe('canvas frames: read only when changed, bounded in flight, stamped when
     }
   });
 });
+
+/** A WebGL stand-in whose context may discard its drawing buffer once shown (preserveDrawingBuffer false). */
+function setupGl(preserve: boolean, canvasAttrs = '') {
+  const g = window as unknown as Record<string, unknown>;
+  class Gl {
+    canvas!: HTMLCanvasElement;
+    clear() {}
+    drawArrays() {}
+    getContextAttributes() {
+      return { preserveDrawingBuffer: preserve };
+    }
+  }
+  g.WebGLRenderingContext = Gl;
+  document.body.innerHTML = `<canvas id="c" width="4" height="4" ${canvasAttrs}></canvas>`;
+  const canvas = document.getElementById('c') as HTMLCanvasElement;
+  const mirror = createMirror();
+  mirror.add(canvas, { id: 7, type: 2, tagName: 'canvas', attributes: {}, childNodes: [] } as never);
+  const m = new CanvasManager({
+    recordCanvas: true,
+    mutationCb: () => undefined,
+    win: window as never,
+    blockClass: 'rr-block',
+    blockSelector: null,
+    unblockSelector: null,
+    mirror,
+    dataURLOptions: { type: 'image/png' },
+    sampling: 1000,
+  });
+  const gl = new Gl();
+  gl.canvas = canvas;
+  // which task each read happened in: true while the drawing task runs
+  const reads: boolean[] = [];
+  let drawing = false;
+  (globalThis as unknown as Record<string, unknown>).createImageBitmap = () => {
+    reads.push(drawing);
+    return Promise.resolve({ close() {} });
+  };
+  // a draw in a task of its own; the flag drops in the next task
+  const drawTask = () =>
+    new Promise<void>((resolve) =>
+      setTimeout(() => {
+        drawing = true;
+        gl.clear();
+        gl.drawArrays();
+        setTimeout(() => {
+          drawing = false;
+          resolve();
+        }, 0);
+      }, 0),
+    );
+  const restore = () => {
+    m.reset();
+    delete g.WebGLRenderingContext;
+  };
+  return { m, gl, reads, drawTask, restore };
+}
+
+describe('canvas frames: a WebGL buffer the browser clears once shown is read in the task that drew it (item 8)', () => {
+  it('preserveDrawingBuffer false: every drawing task is read before it ends, once per task', async () => {
+    const { reads, drawTask, restore } = setupGl(false);
+    try {
+      await new Promise((r) => setTimeout(r, 40)); // the loop's first reads (canvas not seen drawing yet)
+      reads.length = 0;
+      await drawTask();
+      await drawTask(); // two draws within one animation frame: two frames
+      expect(reads).toEqual([true, true]);
+      await new Promise((r) => setTimeout(r, 40));
+      expect(reads).toEqual([true, true]); // the frame loop does not read it again
+    } finally {
+      restore();
+    }
+  });
+
+  it('a preserved buffer is left to the frame loop; a blocked canvas is never read', async () => {
+    const kept = setupGl(true);
+    try {
+      await new Promise((r) => setTimeout(r, 40));
+      kept.reads.length = 0;
+      await kept.drawTask();
+      expect(kept.reads).toEqual([]);
+      await new Promise((r) => setTimeout(r, 40));
+      expect(kept.reads).toEqual([false]);
+    } finally {
+      kept.restore();
+    }
+    const blocked = setupGl(false, 'class="rr-block"');
+    try {
+      await blocked.drawTask();
+      await new Promise((r) => setTimeout(r, 40));
+      expect(blocked.reads).toEqual([]);
+    } finally {
+      blocked.restore();
+    }
+  });
+});

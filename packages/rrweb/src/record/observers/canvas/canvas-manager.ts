@@ -178,6 +178,18 @@ export class CanvasManager implements CanvasManagerInterface {
   private dirty = new WeakSet<object>();
   private known = new WeakSet<object>();
   private lastMarked: unknown = null;
+  /**
+   * Panopticon item 8: a WebGL context created without
+   * preserveDrawingBuffer (before the recorder could force it) discards its
+   * drawing buffer once the frame is shown; a read in a later task than the
+   * draw gets a cleared canvas. Such a canvas is read at the end of the task
+   * that drew it (a microtask), before the browser can show and clear it.
+   */
+  private discards = new WeakMap<object, boolean>();
+  private endOfTask = new Set<HTMLCanvasElement>();
+  private endOfTaskQueued = false;
+  /** the frame loop reads on every animation frame (sampling >= 60 fps) */
+  private everyFrame = false;
   private bitmapBytes = 0;
   /** Bench only: in-flight and backpressure counters. */
   public stats = {
@@ -185,6 +197,10 @@ export class CanvasManager implements CanvasManagerInterface {
     bitmapBytesPeak: 0,
     deferred: 0,
     unchangedSkipped: 0,
+    /** frames read whose bytes equal the canvas's previous frame (not emitted) */
+    repeatSkipped: 0,
+    /** frames read that came back without pixels (bitmap or encode failed, blank) */
+    emptyReads: 0,
   };
   private pixelToken = 0;
 
@@ -209,6 +225,7 @@ export class CanvasManager implements CanvasManagerInterface {
     this.pool = [];
     this.poolLoad = [];
     this.frames.clear();
+    this.endOfTask.clear();
     this.bitmapBytes = 0;
     this.snapshotInProgressMap = new Map();
     this.pixelRequests.clear();
@@ -222,8 +239,75 @@ export class CanvasManager implements CanvasManagerInterface {
     if (canvas && typeof canvas === 'object') {
       this.dirty.add(canvas);
       this.known.add(canvas);
+      if (this.everyFrame && this.pool.length && this.discardsBuffer(ctx))
+        this.readAtEndOfTask(canvas as HTMLCanvasElement);
     }
   };
+
+  private discardsBuffer(ctx: object): boolean {
+    let d = this.discards.get(ctx);
+    if (d === undefined) {
+      const gl = ctx as WebGLRenderingContext;
+      // getContextAttributes is not patched (pure): no mark from here
+      const attrs =
+        'drawArrays' in gl && typeof gl.getContextAttributes === 'function'
+          ? gl.getContextAttributes()
+          : null;
+      d = !!attrs && attrs.preserveDrawingBuffer === false;
+      this.discards.set(ctx, d);
+    }
+    return d;
+  }
+
+  private readAtEndOfTask(canvas: HTMLCanvasElement) {
+    this.endOfTask.add(canvas);
+    if (this.endOfTaskQueued) return;
+    this.endOfTaskQueued = true;
+    queueMicrotask(() => {
+      this.endOfTaskQueued = false;
+      // a draw in a later task marks (and is read) again
+      this.lastMarked = null;
+      const canvases = [...this.endOfTask];
+      this.endOfTask.clear();
+      if (!this.pool.length) return;
+      const benchStart =
+        typeof __PANO_BENCH__ !== 'undefined' && __PANO_BENCH__
+          ? performance.now()
+          : 0;
+      const {
+        blockClass,
+        blockSelector,
+        unblockSelector,
+        dataURLOptions,
+        maxCanvasSize,
+      } = this.options;
+      for (const c of canvases) {
+        if (
+          !this.dirty.has(c) ||
+          !this.mirror.hasNode(c) ||
+          !c.width ||
+          !c.height ||
+          isBlocked(c, blockClass, blockSelector, unblockSelector, true)
+        )
+          continue;
+        if (
+          this.captureSequenced(
+            c,
+            this.mirror.getId(c),
+            dataURLOptions,
+            maxCanvasSize,
+          )
+        )
+          this.dirty.delete(c);
+      }
+      if (typeof __PANO_BENCH__ !== 'undefined' && __PANO_BENCH__) {
+        performance.measure('pano:rec:canvas', {
+          start: benchStart,
+          end: performance.now(),
+        });
+      }
+    });
+  }
 
   private markCanvasDirty = (canvas: unknown) => {
     if (canvas && typeof canvas === 'object') {
@@ -329,6 +413,8 @@ export class CanvasManager implements CanvasManagerInterface {
       errorHandler,
     } = options;
     options.sampling = sampling;
+    this.everyFrame =
+      recordCanvas && typeof sampling === 'number' && sampling >= 60;
     if (typeof __PANO_BENCH__ !== 'undefined' && __PANO_BENCH__)
       (win as unknown as { __panoCanvasStats?: unknown }).__panoCanvasStats =
         this.stats;
@@ -504,7 +590,10 @@ export class CanvasManager implements CanvasManagerInterface {
       f.done.delete(f.emit);
       f.at.delete(f.emit);
       f.emit++;
-      if (!d || !('base64' in d)) continue;
+      if (!d || !('base64' in d)) {
+        this.stats.emptyReads++;
+        continue;
+      }
       // exact: sha-256 of the bytes (the worker's), else the bytes themselves
       const key = d.hash || d.base64;
       // the first frame of a transparent canvas: nothing to draw (as upstream)
@@ -512,7 +601,10 @@ export class CanvasManager implements CanvasManagerInterface {
         f.last = key;
         continue;
       }
-      if (key === f.last) continue; // byte-identical to the previous frame
+      if (key === f.last) {
+        this.stats.repeatSkipped++; // byte-identical to the previous frame
+        continue;
+      }
       f.last = key;
       this.emitFrame(d, at);
     }

@@ -8,26 +8,24 @@
  */
 import { describe, expect, it } from 'vitest';
 import mitt from 'mitt';
-import {
-  EventType,
-  IncrementalSource,
-  type eventWithTime,
-} from '@rrweb/types';
+import { EventType, IncrementalSource, type eventWithTime } from '@rrweb/types';
 import { createPlayerService } from '../../src/replay/machine';
 import { Timer } from '../../src/replay/timer';
 
 const ev = (timestamp: number, type: EventType, data: unknown) =>
-  ({ timestamp, type, data }) as eventWithTime;
+  ({ timestamp, type, data } as eventWithTime);
 
 function setup(events: eventWithTime[]) {
   const applied: number[] = [];
   const emitter = mitt();
   // eslint-disable-next-line prefer-const
   let service: ReturnType<typeof createPlayerService>;
-  const getCastFn = (event: eventWithTime, isSync = false) => () => {
-    applied.push(event.timestamp);
-    service.send({ type: 'CAST_EVENT', payload: { event, isSync } });
-  };
+  const getCastFn =
+    (event: eventWithTime, isSync = false) =>
+    () => {
+      applied.push(event.timestamp);
+      service.send({ type: 'CAST_EVENT', payload: { event, isSync } });
+    };
   service = createPlayerService(
     {
       events,
@@ -38,7 +36,8 @@ function setup(events: eventWithTime[]) {
     },
     {
       getCastFn,
-      applyEventsSynchronously: (evs) => evs.forEach((e) => getCastFn(e, true)()),
+      applyEventsSynchronously: (evs) =>
+        evs.forEach((e) => getCastFn(e, true)()),
       emitter,
     },
   );

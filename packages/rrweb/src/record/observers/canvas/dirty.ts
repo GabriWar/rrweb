@@ -51,7 +51,10 @@ export default function initCanvasDirtyObserver(
           value: function (this: unknown) {
             mark(ctx);
             // eslint-disable-next-line prefer-rest-params
-            return (fn as (...a: unknown[]) => unknown).apply(this, arguments as never);
+            return (fn as (...a: unknown[]) => unknown).apply(
+              this,
+              arguments as never,
+            );
           },
         });
       } catch {
@@ -78,14 +81,20 @@ export default function initCanvasDirtyObserver(
             if (gl && prop === 'getExtension')
               return function (this: { canvas: unknown }) {
                 // eslint-disable-next-line prefer-rest-params
-                const ext = (original as (...a: unknown[]) => unknown).apply(this, arguments as never);
+                const ext = (original as (...a: unknown[]) => unknown).apply(
+                  this,
+                  arguments as never,
+                );
                 wrapExtension(this, ext);
                 return ext;
               };
             return function (this: { canvas: unknown }) {
               mark(this);
               // eslint-disable-next-line prefer-rest-params
-              return (original as (...a: unknown[]) => unknown).apply(this, arguments as never);
+              return (original as (...a: unknown[]) => unknown).apply(
+                this,
+                arguments as never,
+              );
             };
           }),
         );
@@ -102,27 +111,41 @@ export default function initCanvasDirtyObserver(
   const bitmap = w.ImageBitmapRenderingContext?.prototype;
   if (bitmap && 'transferFromImageBitmap' in bitmap) {
     handlers.push(
-      patch(bitmap as Record<string, unknown>, 'transferFromImageBitmap', function (original) {
-        return function (this: { canvas: unknown }) {
-          mark(this);
-          // eslint-disable-next-line prefer-rest-params
-          return (original as (...a: unknown[]) => unknown).apply(this, arguments as never);
-        };
-      }),
+      patch(
+        bitmap as Record<string, unknown>,
+        'transferFromImageBitmap',
+        function (original) {
+          return function (this: { canvas: unknown }) {
+            mark(this);
+            // eslint-disable-next-line prefer-rest-params
+            return (original as (...a: unknown[]) => unknown).apply(
+              this,
+              arguments as never,
+            );
+          };
+        },
+      ),
     );
   }
 
   const canvasProto = w.HTMLCanvasElement?.prototype;
   if (canvasProto) {
     handlers.push(
-      patch(canvasProto as Record<string, unknown>, 'getContext', function (original) {
-        return function (this: unknown) {
-          // eslint-disable-next-line prefer-rest-params
-          const ctx = (original as (...a: unknown[]) => unknown).apply(this, arguments as never);
-          if (ctx) markCanvas(this);
-          return ctx;
-        };
-      }),
+      patch(
+        canvasProto as Record<string, unknown>,
+        'getContext',
+        function (original) {
+          return function (this: unknown) {
+            // eslint-disable-next-line prefer-rest-params
+            const ctx = (original as (...a: unknown[]) => unknown).apply(
+              this,
+              arguments as never,
+            );
+            if (ctx) markCanvas(this);
+            return ctx;
+          };
+        },
+      ),
     );
     for (const key of ['width', 'height']) {
       const d = Object.getOwnPropertyDescriptor(canvasProto, key);
@@ -146,11 +169,17 @@ export default function initCanvasDirtyObserver(
   }
 
   const onContext = (e: Event) => markCanvas(e.target);
-  const types = ['webglcontextlost', 'webglcontextrestored', 'contextlost', 'contextrestored'];
+  const types = [
+    'webglcontextlost',
+    'webglcontextrestored',
+    'contextlost',
+    'contextrestored',
+  ];
   try {
     for (const t of types) win.document.addEventListener(t, onContext, true);
     handlers.push(() => {
-      for (const t of types) win.document.removeEventListener(t, onContext, true);
+      for (const t of types)
+        win.document.removeEventListener(t, onContext, true);
     });
   } catch {
     // a window whose document we cannot reach

@@ -15,7 +15,10 @@ import { CanvasManagerNoop } from '../../src/record/observers/canvas/canvas-mana
 
 const tick = (ms = 20) => new Promise<void>((r) => setTimeout(r, ms));
 
-function canvasOf(sn: serializedNodeWithId, id: string): Record<string, unknown> | null {
+function canvasOf(
+  sn: serializedNodeWithId,
+  id: string,
+): Record<string, unknown> | null {
   if (sn.type === 2 && sn.attributes.id === id) return sn.attributes;
   if ('childNodes' in sn)
     for (const c of sn.childNodes) {
@@ -27,15 +30,23 @@ function canvasOf(sn: serializedNodeWithId, id: string): Record<string, unknown>
 
 /** A canvas manager whose worker answers when the test says so. */
 function fakeManager() {
-  const requests: Array<{ canvas: HTMLCanvasElement; fill: (u: string | null) => void }> = [];
+  const requests: Array<{
+    canvas: HTMLCanvasElement;
+    fill: (u: string | null) => void;
+  }> = [];
   class Fake extends CanvasManagerNoop {
-    capturePixels(canvas: HTMLCanvasElement, _o: unknown, fill: (u: string | null) => void) {
+    capturePixels(
+      canvas: HTMLCanvasElement,
+      _o: unknown,
+      fill: (u: string | null) => void,
+    ) {
       requests.push({ canvas, fill });
       return true;
     }
     // the copy made when the pixels were asked for (item 8 review)
     flushPixels() {
-      for (const r of requests.splice(0)) r.fill(`data:image/png;base64,COPY-${r.canvas.id}`);
+      for (const r of requests.splice(0))
+        r.fill(`data:image/png;base64,COPY-${r.canvas.id}`);
     }
   }
   return { requests, get: () => new Fake() };
@@ -70,7 +81,10 @@ describe('full snapshot canvas pixels off the main thread (item 8)', () => {
     await tick();
     expect(events).toEqual([]); // one canvas still on its way
     m.requests[1].fill(null); // blank: no rr_dataURL, as the synchronous blank check decides
-    expect(events.map((e) => e.type).slice(0, 2)).toEqual([EventType.Meta, EventType.FullSnapshot]);
+    expect(events.map((e) => e.type).slice(0, 2)).toEqual([
+      EventType.Meta,
+      EventType.FullSnapshot,
+    ]);
     const full = events[1];
     // stamped when it was taken, as the synchronous path stamps it
     expect(full.timestamp).toBeGreaterThanOrEqual(events[0].timestamp);
@@ -81,7 +95,9 @@ describe('full snapshot canvas pixels off the main thread (item 8)', () => {
     // the snapshot is the page as of its start: the text change is a mutation after it
     expect(JSON.stringify(node)).toContain('"textContent":"x"');
     const mut = events.find(
-      (e) => e.type === EventType.IncrementalSnapshot && e.data.source === IncrementalSource.Mutation,
+      (e) =>
+        e.type === EventType.IncrementalSnapshot &&
+        e.data.source === IncrementalSource.Mutation,
     )!;
     expect(JSON.stringify(mut.data)).toContain('"textContent":"y"');
     expect(mut.timestamp).toBeGreaterThan(full.timestamp);
@@ -95,10 +111,18 @@ describe('full snapshot canvas pixels off the main thread (item 8)', () => {
     const order: string[] = [];
     const big = 'data:image/png;base64,' + 'A'.repeat(2000);
     const stop = record({
-      emit: (e) => order.push(e.type === EventType.Meta ? 'meta' : e.type === EventType.FullSnapshot ? `full ${JSON.stringify(e.data).includes('"__m__/1"')}` : String(e.type)),
+      emit: (e) =>
+        order.push(
+          e.type === EventType.Meta
+            ? 'meta'
+            : e.type === EventType.FullSnapshot
+            ? `full ${JSON.stringify(e.data).includes('"__m__/1"')}`
+            : String(e.type),
+        ),
       recordCanvas: true,
       getCanvasManager: m.get as never,
-      assetHook: (kind, v) => (v.length >= 1024 ? (order.push(`hook ${kind}`), '__m__/1') : null),
+      assetHook: (kind, v) =>
+        v.length >= 1024 ? (order.push(`hook ${kind}`), '__m__/1') : null,
     })!;
     m.requests[1].fill(null);
     m.requests[0].fill(big);
@@ -133,10 +157,15 @@ describe('full snapshot canvas pixels off the main thread (item 8)', () => {
     })!;
     m.requests.shift()!.fill('data:image/png;base64,AAAA');
     flushMutations();
-    expect(events.map((e) => e.type).slice(0, 2)).toEqual([EventType.Meta, EventType.FullSnapshot]);
+    expect(events.map((e) => e.type).slice(0, 2)).toEqual([
+      EventType.Meta,
+      EventType.FullSnapshot,
+    ]);
     const node = (events[1].data as { node: serializedNodeWithId }).node;
     expect(canvasOf(node, 'a')!.rr_dataURL).toBe('data:image/png;base64,AAAA');
-    expect(canvasOf(node, 'b')!.rr_dataURL).toBe('data:image/png;base64,COPY-b');
+    expect(canvasOf(node, 'b')!.rr_dataURL).toBe(
+      'data:image/png;base64,COPY-b',
+    );
     stop();
   });
 
@@ -148,7 +177,10 @@ describe('full snapshot canvas pixels off the main thread (item 8)', () => {
       recordCanvas: true,
       getCanvasManager: (() => new CanvasManagerNoop()) as never,
     })!;
-    expect(events.map((e) => e.type).slice(0, 2)).toEqual([EventType.Meta, EventType.FullSnapshot]);
+    expect(events.map((e) => e.type).slice(0, 2)).toEqual([
+      EventType.Meta,
+      EventType.FullSnapshot,
+    ]);
     stop();
   });
 });

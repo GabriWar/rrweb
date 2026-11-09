@@ -53,7 +53,9 @@ type NonStandardEvent = Omit<Event, 'composedPath'> & {
   path: EventTarget[];
 };
 
-export function getEventTarget(event: Event | NonStandardEvent): EventTarget | null {
+export function getEventTarget(
+  event: Event | NonStandardEvent,
+): EventTarget | null {
   try {
     if ('composedPath' in event) {
       const path = event.composedPath();

@@ -9,7 +9,8 @@ import type { eventWithTime } from '@rrweb/types';
 import { cleanupSnapshot, snapshot } from 'rrweb-snapshot';
 import record from '../../src/record';
 
-const css = (p: string) => Array.from({ length: 80 }, (_, i) => `.${p}${i}{padding:${i}px}`).join('');
+const css = (p: string) =>
+  Array.from({ length: 80 }, (_, i) => `.${p}${i}{padding:${i}px}`).join('');
 const frame = () => new Promise<void>((r) => setTimeout(r, 30));
 
 describe('record({ assetHook }) (RR-030)', () => {
@@ -21,7 +22,10 @@ describe('record({ assetHook }) (RR-030)', () => {
     cleanupSnapshot();
     const stop = record({
       emit: (e) => events.push(e as eventWithTime),
-      assetHook: (kind, v) => (v.length >= 1024 ? (calls.push([kind, v.length]), `__m__/${calls.length}`) : null),
+      assetHook: (kind, v) =>
+        v.length >= 1024
+          ? (calls.push([kind, v.length]), `__m__/${calls.length}`)
+          : null,
     })!;
     const style = document.createElement('style');
     style.textContent = css('b');
@@ -31,7 +35,9 @@ describe('record({ assetHook }) (RR-030)', () => {
     const full = events.find((e) => e.type === EventType.FullSnapshot)!;
     expect(JSON.stringify(full)).toContain('"_cssText":"__m__/1"');
     const mut = events.find(
-      (e) => e.type === EventType.IncrementalSnapshot && e.data.source === IncrementalSource.Mutation,
+      (e) =>
+        e.type === EventType.IncrementalSnapshot &&
+        e.data.source === IncrementalSource.Mutation,
     )!;
     expect(JSON.stringify(mut)).toContain('"_cssText":"__m__/2"');
     expect(calls.map((c) => c[0])).toEqual(['css', 'css']);

@@ -1121,7 +1121,9 @@ function serializeElementNode(
         });
     let cssText: string | null = null;
     if (stylesheet) {
-      cssText = fz ? frozenSheetText(fz.f, stylesheet) : stringifyStylesheet(stylesheet);
+      cssText = fz
+        ? frozenSheetText(fz.f, stylesheet)
+        : stringifyStylesheet(stylesheet);
     }
     if (cssText) {
       attributes.rel = null;
@@ -1162,7 +1164,9 @@ function serializeElementNode(
 
     const type = getInputType(el);
     const form = fz ? fz.f.form.get(live) : undefined;
-    const value = form ? form.value : getInputValue(el, toUpperCase(tagName), type);
+    const value = form
+      ? form.value
+      : getInputValue(el, toUpperCase(tagName), type);
     const checked = form ? form.checked : (el as HTMLInputElement).checked;
     if (type !== 'submit' && type !== 'button' && value) {
       const forceMask = needMaskingText(
@@ -1177,7 +1181,6 @@ function serializeElementNode(
           maskInputOptions,
         }),
       );
-
 
       attributes.value = maskInputValue({
         isMasked: forceMask,
@@ -1234,7 +1237,8 @@ function serializeElementNode(
     pixelsHook(n as HTMLCanvasElement, dataURLOptions, (dataURL) => {
       if (dataURL === null) return;
       canvasAttributes.rr_dataURL = dataURL;
-      if (hookAtSerialize) deferredAssets.push([canvasAttributes, hookAtSerialize]);
+      if (hookAtSerialize)
+        deferredAssets.push([canvasAttributes, hookAtSerialize]);
     })
   ) {
     // pixels captured now, encoded off the main thread (see CanvasPixelsHook)
@@ -1486,48 +1490,48 @@ function slimDOMExcluded(
  * Options of serializeNodeWithId (and of the sliced walker, Panopticon RR-017).
  */
 export type SerializeNodeOptions = {
-    doc: Document;
-    mirror: Mirror;
-    blockClass: string | RegExp;
-    blockSelector: string | null;
-    unblockSelector: string | null;
-    maskTextClass: string | RegExp;
-    unmaskTextClass: string | RegExp | null;
-    maskTextSelector: string | null;
-    unmaskTextSelector: string | null;
-    skipChild: boolean;
-    inlineStylesheet: boolean;
-    newlyAddedElement?: boolean;
-    maskInputOptions?: MaskInputOptions;
-    maskAllText: boolean;
-    maskAttributeFn: MaskAttributeFn | undefined;
-    maskTextFn: MaskTextFn | undefined;
-    maskInputFn: MaskInputFn | undefined;
-    slimDOMOptions: SlimDOMOptions;
-    dataURLOptions?: DataURLOptions;
-    keepIframeSrcFn?: KeepIframeSrcFn;
-    inlineImages?: boolean;
-    recordCanvas?: boolean;
-    preserveWhiteSpace?: boolean;
-    onSerialize?: (n: Node) => unknown;
-    onIframeLoad?: (
-      iframeNode: HTMLIFrameElement,
-      node: serializedElementNodeWithId,
-    ) => unknown;
-    iframeLoadTimeout?: number;
-    onBlockedImageLoad?: (
-      imageEl: HTMLImageElement,
-      node: serializedElementNodeWithId,
-      rect: DOMRect,
-    ) => unknown;
-    onStylesheetLoad?: (
-      linkNode: HTMLLinkElement,
-      node: serializedElementNodeWithId,
-    ) => unknown;
-    stylesheetLoadTimeout?: number;
-    cssCaptured?: boolean;
-    ignoreCSSAttributes?: Set<string>;
-  };
+  doc: Document;
+  mirror: Mirror;
+  blockClass: string | RegExp;
+  blockSelector: string | null;
+  unblockSelector: string | null;
+  maskTextClass: string | RegExp;
+  unmaskTextClass: string | RegExp | null;
+  maskTextSelector: string | null;
+  unmaskTextSelector: string | null;
+  skipChild: boolean;
+  inlineStylesheet: boolean;
+  newlyAddedElement?: boolean;
+  maskInputOptions?: MaskInputOptions;
+  maskAllText: boolean;
+  maskAttributeFn: MaskAttributeFn | undefined;
+  maskTextFn: MaskTextFn | undefined;
+  maskInputFn: MaskInputFn | undefined;
+  slimDOMOptions: SlimDOMOptions;
+  dataURLOptions?: DataURLOptions;
+  keepIframeSrcFn?: KeepIframeSrcFn;
+  inlineImages?: boolean;
+  recordCanvas?: boolean;
+  preserveWhiteSpace?: boolean;
+  onSerialize?: (n: Node) => unknown;
+  onIframeLoad?: (
+    iframeNode: HTMLIFrameElement,
+    node: serializedElementNodeWithId,
+  ) => unknown;
+  iframeLoadTimeout?: number;
+  onBlockedImageLoad?: (
+    imageEl: HTMLImageElement,
+    node: serializedElementNodeWithId,
+    rect: DOMRect,
+  ) => unknown;
+  onStylesheetLoad?: (
+    linkNode: HTMLLinkElement,
+    node: serializedElementNodeWithId,
+  ) => unknown;
+  stylesheetLoadTimeout?: number;
+  cssCaptured?: boolean;
+  ignoreCSSAttributes?: Set<string>;
+};
 
 /**
  * First half of serializeNodeWithId: serialize `n` itself, give it an id,
@@ -1630,7 +1634,8 @@ function serializeNodeHead(
     else if (shell && shell.id > 0) id = shell.id;
     else id = genId(); // freezeDocument decided otherwise: a fresh id
     if (shell && shell.id === id) {
-      for (const key of Object.keys(shell)) delete (shell as Record<string, unknown>)[key];
+      for (const key of Object.keys(shell))
+        delete (shell as Record<string, unknown>)[key];
       serializedNode = Object.assign(shell, _serializedNode, { id });
     } else {
       serializedNode = Object.assign(_serializedNode, { id });
@@ -1929,7 +1934,6 @@ function serializeNodeTail(
     // this property was not needed in replay side
     delete serializedNode.needBlock;
   }
-
 }
 
 /** Serialize the light-DOM and shadow children of a node (synchronous walk). */
@@ -1982,46 +1986,46 @@ export function serializeNodeWithId(
 
 /** snapshot()'s options. */
 export type SnapshotOptions = {
-    mirror?: Mirror;
-    blockClass?: string | RegExp;
-    blockSelector?: string | null;
-    unblockSelector?: string | null;
-    maskAllText?: boolean;
-    maskTextClass?: string | RegExp;
-    unmaskTextClass?: string | RegExp | null;
-    maskTextSelector?: string | null;
-    unmaskTextSelector?: string | null;
-    inlineStylesheet?: boolean;
-    maskAllInputs?: boolean | MaskInputOptions;
-    maskAttributeFn?: MaskAttributeFn;
-    maskTextFn?: MaskTextFn;
-    maskInputFn?: MaskInputFn;
-    slimDOM?: 'all' | boolean | SlimDOMOptions;
-    dataURLOptions?: DataURLOptions;
-    inlineImages?: boolean;
-    recordCanvas?: boolean;
-    preserveWhiteSpace?: boolean;
-    onSerialize?: (n: Node) => unknown;
-    onIframeLoad?: (
-      iframeNode: HTMLIFrameElement,
-      node: serializedElementNodeWithId,
-    ) => unknown;
-    iframeLoadTimeout?: number;
-    onBlockedImageLoad?: (
-      imageEl: HTMLImageElement,
-      node: serializedElementNodeWithId,
-      rect: DOMRect,
-    ) => unknown;
-    onStylesheetLoad?: (
-      linkNode: HTMLLinkElement,
-      node: serializedElementNodeWithId,
-    ) => unknown;
-    stylesheetLoadTimeout?: number;
-    keepIframeSrcFn?: KeepIframeSrcFn;
-    ignoreCSSAttributes?: Set<string>;
-    /** RR-030, for this call only (record() uses setAssetHook instead). */
-    assetHook?: AssetHook;
-  };
+  mirror?: Mirror;
+  blockClass?: string | RegExp;
+  blockSelector?: string | null;
+  unblockSelector?: string | null;
+  maskAllText?: boolean;
+  maskTextClass?: string | RegExp;
+  unmaskTextClass?: string | RegExp | null;
+  maskTextSelector?: string | null;
+  unmaskTextSelector?: string | null;
+  inlineStylesheet?: boolean;
+  maskAllInputs?: boolean | MaskInputOptions;
+  maskAttributeFn?: MaskAttributeFn;
+  maskTextFn?: MaskTextFn;
+  maskInputFn?: MaskInputFn;
+  slimDOM?: 'all' | boolean | SlimDOMOptions;
+  dataURLOptions?: DataURLOptions;
+  inlineImages?: boolean;
+  recordCanvas?: boolean;
+  preserveWhiteSpace?: boolean;
+  onSerialize?: (n: Node) => unknown;
+  onIframeLoad?: (
+    iframeNode: HTMLIFrameElement,
+    node: serializedElementNodeWithId,
+  ) => unknown;
+  iframeLoadTimeout?: number;
+  onBlockedImageLoad?: (
+    imageEl: HTMLImageElement,
+    node: serializedElementNodeWithId,
+    rect: DOMRect,
+  ) => unknown;
+  onStylesheetLoad?: (
+    linkNode: HTMLLinkElement,
+    node: serializedElementNodeWithId,
+  ) => unknown;
+  stylesheetLoadTimeout?: number;
+  keepIframeSrcFn?: KeepIframeSrcFn;
+  ignoreCSSAttributes?: Set<string>;
+  /** RR-030, for this call only (record() uses setAssetHook instead). */
+  assetHook?: AssetHook;
+};
 
 /** Normalize snapshot() options into what serializeNodeWithId takes. */
 function snapshotSerializeOptions(
@@ -2197,18 +2201,24 @@ export type FrozenDocument = {
   /** base URL each sheet's rules resolve against, as of the freeze */
   sheetHref: Map<CSSStyleSheet, string | null>;
   /** a sheet being stringified rule by rule across slices */
-  job: { sheet: CSSStyleSheet; rules: CSSRule[]; i: number; parts: string[] } | null;
-  canvas: Map<
-    Node,
-    { url: string | null | undefined; target?: attributes }
-  >;
+  job: {
+    sheet: CSSStyleSheet;
+    rules: CSSRule[];
+    i: number;
+    parts: string[];
+  } | null;
+  canvas: Map<Node, { url: string | null | undefined; target?: attributes }>;
   /** canvas pixels still on their way */
   pending: number;
   onPixels: (() => void) | null;
 };
 
-let frozenNow: { f: FrozenDocument; k: number; live: Node; mirror: Mirror } | null =
-  null;
+let frozenNow: {
+  f: FrozenDocument;
+  k: number;
+  live: Node;
+  mirror: Mirror;
+} | null = null;
 /** Frozen snapshots still walking, for noteSheetMutation. */
 const walkingFrozen = new Set<FrozenDocument>();
 
@@ -2217,12 +2227,16 @@ const walkingFrozen = new Set<FrozenDocument>();
  * snapshot that has not serialized that sheet yet reads it now, so it
  * serializes the rules it had when the freeze was taken.
  */
-export function noteSheetMutation(sheet: CSSStyleSheet | null | undefined): void {
+export function noteSheetMutation(
+  sheet: CSSStyleSheet | null | undefined,
+): void {
   if (!sheet || !walkingFrozen.size) return;
   let root: CSSStyleSheet = sheet;
-  for (let i = 0; root.parentStyleSheet && i < 32; i++) root = root.parentStyleSheet;
+  for (let i = 0; root.parentStyleSheet && i < 32; i++)
+    root = root.parentStyleSheet;
   for (const f of walkingFrozen)
-    if (!f.sheetText.has(root) && f.sheetHref.has(root)) frozenSheetText(f, root);
+    if (!f.sheetText.has(root) && f.sheetHref.has(root))
+      frozenSheetText(f, root);
 }
 
 /** The base URL stringifyStylesheet() resolves a sheet's rules against. */
@@ -2233,7 +2247,10 @@ function sheetBase(sh: CSSStyleSheet): string | null {
 }
 
 /** A frozen sheet's text: stringifyStylesheet() as of the freeze. */
-function frozenSheetText(f: FrozenDocument, sheet: CSSStyleSheet): string | null {
+function frozenSheetText(
+  f: FrozenDocument,
+  sheet: CSSStyleSheet,
+): string | null {
   let t = f.sheetText.get(sheet);
   if (t === undefined) {
     if (!f.job || f.job.sheet !== sheet) startSheetJob(f, sheet);
@@ -2269,7 +2286,10 @@ function finishSheetJob(f: FrozenDocument, stop: () => boolean): boolean {
       j.parts.push(stringifyRule(j.rules[j.i++], href));
       if (j.i < j.rules.length && stop()) return false;
     }
-    f.sheetText.set(j.sheet, fixBrowserCompatibilityIssuesInCSS(j.parts.join('')));
+    f.sheetText.set(
+      j.sheet,
+      fixBrowserCompatibilityIssuesInCSS(j.parts.join('')),
+    );
   } catch {
     f.sheetText.set(j.sheet, '');
   }
@@ -2312,12 +2332,30 @@ export function selectorMatchesOnCopy(sel: string): boolean {
 
 const FROZEN_ABORT = new Error('rrweb-snapshot: page cannot be frozen');
 const SHADOW_HOSTS = new Set([
-  'article', 'aside', 'blockquote', 'body', 'div', 'footer', 'h1', 'h2', 'h3',
-  'h4', 'h5', 'h6', 'header', 'main', 'nav', 'p', 'section', 'span',
+  'article',
+  'aside',
+  'blockquote',
+  'body',
+  'div',
+  'footer',
+  'h1',
+  'h2',
+  'h3',
+  'h4',
+  'h5',
+  'h6',
+  'header',
+  'main',
+  'nav',
+  'p',
+  'section',
+  'span',
 ]);
 
 /** Element.prototype.shadowRoot's getter from rrweb's untainted prototype. */
-function untaintedShadowGetter(): ((this: Element) => ShadowRoot | null) | null {
+function untaintedShadowGetter():
+  | ((this: Element) => ShadowRoot | null)
+  | null {
   try {
     const get = Object.getOwnPropertyDescriptor(
       dom.getUntaintedPrototype('Element'),
@@ -2383,7 +2421,9 @@ export function freezeDocument(
         Array.from(n.getElementsByClassName(o.blockClass)),
       );
       if (o.blockSelector)
-        n.querySelectorAll(o.blockSelector).forEach((e) => blockCandidates!.add(e));
+        n.querySelectorAll(o.blockSelector).forEach((e) =>
+          blockCandidates!.add(e),
+        );
     }
   } catch {
     blockCandidates = null; // an invalid selector: the per-element check decides
@@ -2409,7 +2449,12 @@ export function freezeDocument(
     if (skip) kind.push(0);
     else {
       const t = node.nodeType;
-      if (t === node.DOCUMENT_NODE || t === node.DOCUMENT_TYPE_NODE || t === node.CDATA_SECTION_NODE) kind.push(1);
+      if (
+        t === node.DOCUMENT_NODE ||
+        t === node.DOCUMENT_TYPE_NODE ||
+        t === node.CDATA_SECTION_NODE
+      )
+        kind.push(1);
       else if (t === node.COMMENT_NODE) kind.push(slim.comment ? 2 : 1);
       else if (t === node.TEXT_NODE) {
         // serializeNodeHead drops a whitespace-only text where white space
@@ -2424,14 +2469,25 @@ export function freezeDocument(
             // unreadable rules: kept as text
           }
         }
-        kind.push(!keepWS && (captured || !(node.textContent || '').trim().length) ? 2 : 1);
+        kind.push(
+          !keepWS && (captured || !(node.textContent || '').trim().length)
+            ? 2
+            : 1,
+        );
       } else if (t === node.ELEMENT_NODE) {
         const el = node as HTMLElement;
         // only custom elements and these can host a shadow root
         // (DOM attachShadow's valid shadow host names)
-        if ((el.localName.includes('-') || SHADOW_HOSTS.has(el.localName)) && shadowOf(el))
+        if (
+          (el.localName.includes('-') || SHADOW_HOSTS.has(el.localName)) &&
+          shadowOf(el)
+        )
           throw FROZEN_ABORT;
-        const tagName = el.localName.includes(':') || el.localName !== el.localName.toLowerCase() ? getValidTagName(el) : (el.localName as Lowercase<string>);
+        const tagName =
+          el.localName.includes(':') ||
+          el.localName !== el.localName.toLowerCase()
+            ? getValidTagName(el)
+            : (el.localName as Lowercase<string>);
         let excluded = false;
         if (tagName === 'script' || tagName === 'link' || tagName === 'meta') {
           const a: attributes = {};
@@ -2448,20 +2504,42 @@ export function freezeDocument(
           kind.push(1);
           const needBlock =
             blockCandidates === null
-              ? _isBlockedElement(el, o.blockClass, o.blockSelector, o.unblockSelector)
+              ? _isBlockedElement(
+                  el,
+                  o.blockClass,
+                  o.blockSelector,
+                  o.unblockSelector,
+                )
               : blockCandidates.has(el) &&
-                _isBlockedElement(el, o.blockClass, o.blockSelector, o.unblockSelector);
+                _isBlockedElement(
+                  el,
+                  o.blockClass,
+                  o.blockSelector,
+                  o.unblockSelector,
+                );
           blocked[k] = needBlock;
           if (el.scrollLeft || el.scrollTop)
-            f.scroll.set(el, { scrollLeft: el.scrollLeft, scrollTop: el.scrollTop });
+            f.scroll.set(el, {
+              scrollLeft: el.scrollLeft,
+              scrollTop: el.scrollTop,
+            });
           if (needBlock) {
             const r = el.getBoundingClientRect();
             f.rect.set(el, { width: r.width, height: r.height });
             childSkip = true;
           }
-          if (tagName === 'input' || tagName === 'textarea' || tagName === 'select' || tagName === 'option') {
+          if (
+            tagName === 'input' ||
+            tagName === 'textarea' ||
+            tagName === 'select' ||
+            tagName === 'option'
+          ) {
             const fe = el as HTMLInputElement;
-            const value = getInputValue(fe, toUpperCase(tagName), getInputType(fe));
+            const value = getInputValue(
+              fe,
+              toUpperCase(tagName),
+              getInputType(fe),
+            );
             f.form.set(el, {
               value,
               checked: fe.checked,
@@ -2472,9 +2550,11 @@ export function freezeDocument(
             const me = el as HTMLMediaElement;
             f.media.set(el, { paused: me.paused, currentTime: me.currentTime });
           } else if (tagName === 'dialog') {
-            if ((el as HTMLDialogElement).open && el.matches('dialog:modal')) f.modal.add(el);
+            if ((el as HTMLDialogElement).open && el.matches('dialog:modal'))
+              f.modal.add(el);
           } else if (tagName === 'iframe') {
-            if (getIFrameContentDocument(el as HTMLIFrameElement)) f.iframeDoc.add(el);
+            if (getIFrameContentDocument(el as HTMLIFrameElement))
+              f.iframeDoc.add(el);
           } else if (tagName === 'style') {
             const sh = (el as HTMLStyleElement).sheet as CSSStyleSheet | null;
             f.sheets.set(el, sh);
@@ -2494,7 +2574,8 @@ export function freezeDocument(
               f.custom.set(tagName, false);
             }
           }
-          if (tagName === 'iframe' || tagName === 'img' || tagName === 'link') tails.push(k);
+          if (tagName === 'iframe' || tagName === 'img' || tagName === 'link')
+            tails.push(k);
         }
         if (excluded) childSkip = true;
       } else kind.push(0); // not serialized by rrweb either
@@ -2514,7 +2595,9 @@ export function freezeDocument(
   const inert = n.implementation.createHTMLDocument('');
   try {
     for (let c = n.firstChild; c; c = c.nextSibling)
-      f.roots.push(c.nodeType === c.DOCUMENT_TYPE_NODE ? c : inert.importNode(c, true));
+      f.roots.push(
+        c.nodeType === c.DOCUMENT_TYPE_NODE ? c : inert.importNode(c, true),
+      );
   } catch {
     return null;
   }
@@ -2526,7 +2609,9 @@ export function freezeDocument(
       f.shells.push(null);
       continue;
     }
-    const shell = { id: kind[k] === 2 ? IGNORED_NODE : genId() } as serializedNodeWithId;
+    const shell = {
+      id: kind[k] === 2 ? IGNORED_NODE : genId(),
+    } as serializedNodeWithId;
     f.shells.push(shell);
     o.mirror.add(node, shell);
     if (kind[k] === 2) continue;
@@ -2537,19 +2622,27 @@ export function freezeDocument(
       const ln = (node as Element).localName;
       if (ln === 'iframe' || ln === 'link') o.onSerialize(node);
     }
-    if (o.recordCanvas && !blocked[k] && (node as Element).localName === 'canvas')
+    if (
+      o.recordCanvas &&
+      !blocked[k] &&
+      (node as Element).localName === 'canvas'
+    )
       freezeCanvas(f, node as HTMLCanvasElement, o.dataURLOptions || {});
   }
   // load hooks after the children, as serializeNodeTail runs them
   for (const k of tails) {
     const el = live[k] as HTMLElement;
     const tagName = el.localName;
-    if (tagName !== 'iframe' && tagName !== 'img' && tagName !== 'link') continue;
+    if (tagName !== 'iframe' && tagName !== 'img' && tagName !== 'link')
+      continue;
     const shell = f.shells[k]!;
     Object.assign(shell, {
       type: NodeType.Element,
       tagName,
-      attributes: { rel: el.getAttribute('rel'), href: el.getAttribute('href') },
+      attributes: {
+        rel: el.getAttribute('rel'),
+        href: el.getAttribute('href'),
+      },
       childNodes: [],
       needBlock: blocked[k] || undefined,
     });
@@ -2564,7 +2657,9 @@ function freezeCanvas(
   canvas: HTMLCanvasElement,
   dataURLOptions: DataURLOptions,
 ) {
-  const slot: { url: string | null | undefined; target?: attributes } = { url: undefined };
+  const slot: { url: string | null | undefined; target?: attributes } = {
+    url: undefined,
+  };
   f.canvas.set(canvas, slot);
   const hookAtFreeze = assetHook;
   const taken =
@@ -2625,7 +2720,13 @@ export async function snapshotSliced(
     k: number;
   };
   const stack: Frame[] = [
-    { sn: root.serializedNode, childOptions: root.childOptions, kids: f.roots, i: 0, k: 1 },
+    {
+      sn: root.serializedNode,
+      childOptions: root.childOptions,
+      kids: f.roots,
+      i: 0,
+      k: 1,
+    },
   ];
   walkingFrozen.add(f);
   let forced = false;
@@ -2648,7 +2749,8 @@ export async function snapshotSliced(
         const sheet = f.sheets.get(f.live[fr.k]);
         if (sheet && !f.sheetText.has(sheet)) {
           if (!f.job || f.job.sheet !== sheet) startSheetJob(f, sheet);
-          if (!finishSheetJob(f, () => !forced && slicer.shouldYield())) return false;
+          if (!finishSheetJob(f, () => !forced && slicer.shouldYield()))
+            return false;
           if (!forced && slicer.shouldYield()) return false;
         }
         const c = fr.kids[fr.i++];
@@ -2665,8 +2767,11 @@ export async function snapshotSliced(
           frozenNow = null;
         }
         if (head) {
-          (fr.sn as { childNodes: serializedNodeWithId[] }).childNodes.push(head.serializedNode);
-          if (head.serializedNode.type === NodeType.Element) delete head.serializedNode.needBlock;
+          (fr.sn as { childNodes: serializedNodeWithId[] }).childNodes.push(
+            head.serializedNode,
+          );
+          if (head.serializedNode.type === NodeType.Element)
+            delete head.serializedNode.needBlock;
           if (
             head.childOptions &&
             (head.serializedNode.type === NodeType.Element ||

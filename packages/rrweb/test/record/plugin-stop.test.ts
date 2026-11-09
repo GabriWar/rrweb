@@ -25,7 +25,10 @@ describe('plugins report during stop (item 8)', () => {
       options: {},
     };
     const events: eventWithTime[] = [];
-    const stop = record({ emit: (e) => events.push(e as eventWithTime), plugins: [plugin] })!;
+    const stop = record({
+      emit: (e) => events.push(e as eventWithTime),
+      plugins: [plugin],
+    })!;
     await tick(50);
     stop();
     later!();

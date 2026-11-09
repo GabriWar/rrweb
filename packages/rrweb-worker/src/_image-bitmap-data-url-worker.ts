@@ -158,13 +158,21 @@ const handle = async function (
     });
     lastBlobMap.set(id, base64);
   } else {
-    return worker.postMessage({ id: e.data.id, seq: e.data.seq, initial: e.data.initial });
+    return worker.postMessage({
+      id: e.data.id,
+      seq: e.data.seq,
+      initial: e.data.initial,
+    });
   }
 };
 
 worker.onmessage = (e) => {
   // a failed frame still answers, so the canvas manager's order moves on
   handle(e).catch(() => {
-    worker.postMessage({ id: e.data.id, seq: e.data.seq, initial: e.data.initial });
+    worker.postMessage({
+      id: e.data.id,
+      seq: e.data.seq,
+      initial: e.data.initial,
+    });
   });
 };

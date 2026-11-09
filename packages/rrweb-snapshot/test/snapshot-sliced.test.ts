@@ -97,7 +97,11 @@ describe('snapshotSliced (RR-017)', () => {
         },
       };
       cleanupSnapshot();
-      const promised = await snapshotSliced(doc, { ...OPTIONS, mirror: new Mirror() }, slicer);
+      const promised = await snapshotSliced(
+        doc,
+        { ...OPTIONS, mirror: new Mirror() },
+        slicer,
+      );
       if (yields < 3) return; // a fixture too small to yield three times
       expect(finished).not.toBeNull();
       expect(JSON.stringify(finished)).toBe(expected);
@@ -108,7 +112,9 @@ describe('snapshotSliced (RR-017)', () => {
   );
 
   it('shadow roots and slots: identical, with isShadow / isShadowHost in the same places', async () => {
-    const doc = load('<div id="host"><span slot="a">light</span></div><p>after</p>');
+    const doc = load(
+      '<div id="host"><span slot="a">light</span></div><p>after</p>',
+    );
     const host = doc.getElementById('host')!;
     const root = host.attachShadow({ mode: 'open' });
     root.innerHTML = '<b>in shadow <slot name="a"></slot></b><i>two</i>';
@@ -146,7 +152,9 @@ describe('snapshotSliced (RR-017)', () => {
   });
 
   it('a node moved into a not-yet-visited part is serialized once', async () => {
-    const doc = load('<div id="x"><span id="m">m</span></div><div id="y"></div>');
+    const doc = load(
+      '<div id="x"><span id="m">m</span></div><div id="y"></div>',
+    );
     let moved = false;
     cleanupSnapshot();
     const mirror = new Mirror();
@@ -195,8 +203,16 @@ describe('snapshotSliced (RR-017)', () => {
   });
 
   it.each([
-    ['class', (el: Element) => el.classList.add('rr-block'), (el: Element) => el.classList.remove('rr-block')],
-    ['selector', (el: Element) => el.setAttribute('data-block', ''), (el: Element) => el.removeAttribute('data-block')],
+    [
+      'class',
+      (el: Element) => el.classList.add('rr-block'),
+      (el: Element) => el.classList.remove('rr-block'),
+    ],
+    [
+      'selector',
+      (el: Element) => el.setAttribute('data-block', ''),
+      (el: Element) => el.removeAttribute('data-block'),
+    ],
   ])(
     'a block (%s) added or removed between slices: the block as of the start decides, as in snapshot() then (privacy: a blocked element never shows its content)',
     async (_how, block, unblock) => {
@@ -232,7 +248,9 @@ describe('snapshotSliced (RR-017)', () => {
   );
 
   it('a block on an element whose children are all done stays a capture of the earlier state', async () => {
-    const doc = load('<div id="p"><span>one</span></div><div id="q"><p>x</p><p>y</p></div>');
+    const doc = load(
+      '<div id="p"><span>one</span></div><div id="q"><p>x</p><p>y</p></div>',
+    );
     const mirror = new Mirror();
     let blocked = false;
     cleanupSnapshot();
@@ -271,7 +289,13 @@ describe('snapshotSliced (RR-017)', () => {
 
 describe('freeze privacy selectors (fail closed)', () => {
   it('only structural pseudo-classes let a copy decide block / mask', () => {
-    for (const sel of ['.mask', '[data-block]', 'ul > li:nth-child(2n+1)', 'div:not(.x):has(> p:first-child)', 'p:empty'])
+    for (const sel of [
+      '.mask',
+      '[data-block]',
+      'ul > li:nth-child(2n+1)',
+      'div:not(.x):has(> p:first-child)',
+      'p:empty',
+    ])
       expect(selectorMatchesOnCopy(sel), sel).toBe(true);
     for (const sel of [
       'input:checked',
@@ -293,10 +317,24 @@ describe('freeze privacy selectors (fail closed)', () => {
   });
 
   it('a state-dependent mask or block selector makes freezeDocument give up', () => {
-    const { window } = new JSDOM('<p class="mask">a</p><input type="checkbox">');
+    const { window } = new JSDOM(
+      '<p class="mask">a</p><input type="checkbox">',
+    );
     const doc = window.document;
-    expect(freezeDocument(doc, { mirror: new Mirror(), maskTextSelector: 'body:has(input:indeterminate) p' })).toBeNull();
-    expect(freezeDocument(doc, { mirror: new Mirror(), blockSelector: 'option:checked' })).toBeNull();
-    expect(freezeDocument(doc, { mirror: new Mirror(), maskTextSelector: '.mask' })).not.toBeNull();
+    expect(
+      freezeDocument(doc, {
+        mirror: new Mirror(),
+        maskTextSelector: 'body:has(input:indeterminate) p',
+      }),
+    ).toBeNull();
+    expect(
+      freezeDocument(doc, {
+        mirror: new Mirror(),
+        blockSelector: 'option:checked',
+      }),
+    ).toBeNull();
+    expect(
+      freezeDocument(doc, { mirror: new Mirror(), maskTextSelector: '.mask' }),
+    ).not.toBeNull();
   });
 });

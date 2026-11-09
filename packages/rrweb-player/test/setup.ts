@@ -27,7 +27,12 @@ if (typeof HTMLIFrameElement !== 'undefined') {
         get: (target, key) =>
           typeof key === 'string' && TIMERS.has(key)
             ? (...args: unknown[]) =>
-                (window as unknown as Record<string, (...a: unknown[]) => unknown>)[key](...args)
+                (
+                  window as unknown as Record<
+                    string,
+                    (...a: unknown[]) => unknown
+                  >
+                )[key](...args)
             : Reflect.get(target, key),
       });
     },

@@ -216,11 +216,21 @@ describe('rrweb-plugin-network-record', () => {
       nextHopProtocol: 'h2',
       serverTiming: [{ name: 'db', duration: 12.5, description: 'q' }],
     };
-    const entry = { ...json, toJSON: () => json } as unknown as PerformanceResourceTiming;
+    const entry = {
+      ...json,
+      toJSON: () => json,
+    } as unknown as PerformanceResourceTiming;
     const events: NetworkData[] = [];
     const win = createMockWindow({ initialEntries: [entry] });
-    const plugin = getRecordNetworkPlugin({ recordInitialRequests: true, initiatorTypes: ['img'] });
-    const cleanup = plugin.observer((data: NetworkData) => events.push(data), win, plugin.options);
+    const plugin = getRecordNetworkPlugin({
+      recordInitialRequests: true,
+      initiatorTypes: ['img'],
+    });
+    const cleanup = plugin.observer(
+      (data: NetworkData) => events.push(data),
+      win,
+      plugin.options,
+    );
     cleanup();
     const r = events[0].requests[0];
     expect(r.startTime).toBe(12.345);
@@ -310,10 +320,20 @@ describe('rrweb-plugin-network-record', () => {
     const binary = new Uint8Array([0, 255, 128, 10, 192, 1, 254]);
     const b64 = (u: Uint8Array) => Buffer.from(u).toString('base64');
 
-    function record(win: MockWindow, initiatorTypes: Array<'fetch' | 'xmlhttprequest'>) {
+    function record(
+      win: MockWindow,
+      initiatorTypes: Array<'fetch' | 'xmlhttprequest'>,
+    ) {
       const events: NetworkData[] = [];
-      const plugin = getRecordNetworkPlugin({ recordBody: true, initiatorTypes });
-      const cleanup = plugin.observer((data: NetworkData) => events.push(data), win, plugin.options);
+      const plugin = getRecordNetworkPlugin({
+        recordBody: true,
+        initiatorTypes,
+      });
+      const cleanup = plugin.observer(
+        (data: NetworkData) => events.push(data),
+        win,
+        plugin.options,
+      );
       return { events, cleanup };
     }
 
@@ -321,10 +341,13 @@ describe('rrweb-plugin-network-record', () => {
       vi.useFakeTimers();
       const url = 'https://example.com/stream';
       let push!: ReadableStreamDefaultController<Uint8Array>;
-      const stream = new ReadableStream<Uint8Array>({ start: (c) => void (push = c) });
+      const stream = new ReadableStream<Uint8Array>({
+        start: (c) => void (push = c),
+      });
       const win = createMockWindow({
         entries: [createPerformanceEntry(url, 'fetch')],
-        fetchImpl: async () => new Response(stream, { headers: { 'content-type': 'text/plain' } }),
+        fetchImpl: async () =>
+          new Response(stream, { headers: { 'content-type': 'text/plain' } }),
       });
       const { events, cleanup } = record(win, ['fetch']);
       const res = await win.fetch(url);
@@ -345,10 +368,16 @@ describe('rrweb-plugin-network-record', () => {
       const url = 'https://example.com/bin';
       const win = createMockWindow({
         entries: [createPerformanceEntry(url, 'fetch')],
-        fetchImpl: async () => new Response(binary.slice(), { headers: { 'content-type': 'application/octet-stream' } }),
+        fetchImpl: async () =>
+          new Response(binary.slice(), {
+            headers: { 'content-type': 'application/octet-stream' },
+          }),
       });
       const { events, cleanup } = record(win, ['fetch']);
-      const res = await win.fetch(url, { method: 'POST', body: binary.slice() });
+      const res = await win.fetch(url, {
+        method: 'POST',
+        body: binary.slice(),
+      });
       expect(new Uint8Array(await res.arrayBuffer())).toEqual(binary);
       await settle();
       cleanup();
@@ -373,7 +402,9 @@ describe('rrweb-plugin-network-record', () => {
 
     it('XHR ArrayBuffer and Blob bodies are recorded byte for byte, not as a placeholder', async () => {
       const url = 'https://example.com/xhr';
-      const win = createMockWindow({ entries: [createPerformanceEntry(url, 'xmlhttprequest')] });
+      const win = createMockWindow({
+        entries: [createPerformanceEntry(url, 'xmlhttprequest')],
+      });
       const { events, cleanup } = record(win, ['xmlhttprequest']);
       const xhr = new win.XMLHttpRequest() as unknown as {
         open: (m: string, u: string) => void;
@@ -406,12 +437,27 @@ describe('rrweb-plugin-network-record', () => {
 
     it('an XHR Document body keeps its markup, HTML and XML', async () => {
       const url = 'https://example.com/doc';
-      const win = createMockWindow({ entries: [createPerformanceEntry(url, 'xmlhttprequest')] });
+      const win = createMockWindow({
+        entries: [createPerformanceEntry(url, 'xmlhttprequest')],
+      });
       const events: NetworkData[] = [];
-      const plugin = getRecordNetworkPlugin({ recordBody: true, initiatorTypes: ['xmlhttprequest'] });
-      const cleanup = plugin.observer((d: NetworkData) => events.push(d), win, plugin.options);
-      const html = new DOMParser().parseFromString('<!DOCTYPE html><html><body><p class="a" data-x="1">hi <b>there</b></p><!--c--></body></html>', 'text/html');
-      const xml = new DOMParser().parseFromString('<root a="1"><item id="i">t</item></root>', 'application/xml');
+      const plugin = getRecordNetworkPlugin({
+        recordBody: true,
+        initiatorTypes: ['xmlhttprequest'],
+      });
+      const cleanup = plugin.observer(
+        (d: NetworkData) => events.push(d),
+        win,
+        plugin.options,
+      );
+      const html = new DOMParser().parseFromString(
+        '<!DOCTYPE html><html><body><p class="a" data-x="1">hi <b>there</b></p><!--c--></body></html>',
+        'text/html',
+      );
+      const xml = new DOMParser().parseFromString(
+        '<root a="1"><item id="i">t</item></root>',
+        'application/xml',
+      );
       const xhr = xhrOf(win);
       xhr.open('POST', url);
       xhr.send(xml);
@@ -420,20 +466,34 @@ describe('rrweb-plugin-network-record', () => {
       await settle();
       cleanup();
       const r = events[0].requests[0];
-      expect(r.responseBody).toBe('<!DOCTYPE html><html><head></head><body><p class="a" data-x="1">hi <b>there</b></p><!--c--></body></html>');
+      expect(r.responseBody).toBe(
+        '<!DOCTYPE html><html><head></head><body><p class="a" data-x="1">hi <b>there</b></p><!--c--></body></html>',
+      );
       expect(r.requestBody).toBe('<root a="1"><item id="i">t</item></root>');
     });
 
     it('a FormData file is recorded with its name, type, size and bytes, entries in order', async () => {
       const url = 'https://example.com/upload';
-      const win = createMockWindow({ entries: [createPerformanceEntry(url, 'xmlhttprequest')] });
+      const win = createMockWindow({
+        entries: [createPerformanceEntry(url, 'xmlhttprequest')],
+      });
       const events: NetworkData[] = [];
-      const plugin = getRecordNetworkPlugin({ recordBody: true, initiatorTypes: ['xmlhttprequest'] });
-      const cleanup = plugin.observer((d: NetworkData) => events.push(d), win, plugin.options);
+      const plugin = getRecordNetworkPlugin({
+        recordBody: true,
+        initiatorTypes: ['xmlhttprequest'],
+      });
+      const cleanup = plugin.observer(
+        (d: NetworkData) => events.push(d),
+        win,
+        plugin.options,
+      );
       const bytes = new Uint8Array([0, 255, 1, 128]);
       const fd = new FormData();
       fd.append('title', 'report');
-      fd.append('file', new File([bytes], 'r.bin', { type: 'application/octet-stream' }));
+      fd.append(
+        'file',
+        new File([bytes], 'r.bin', { type: 'application/octet-stream' }),
+      );
       fd.append('note', 'n');
       const xhr = xhrOf(win);
       xhr.open('POST', url);
@@ -444,24 +504,40 @@ describe('rrweb-plugin-network-record', () => {
       expect(events[0].requests[0].requestBody).toEqual({
         formData: [
           ['title', 'report'],
-          ['file', { name: 'r.bin', type: 'application/octet-stream', size: 4, base64: Buffer.from(bytes).toString('base64') }],
+          [
+            'file',
+            {
+              name: 'r.bin',
+              type: 'application/octet-stream',
+              size: 4,
+              base64: Buffer.from(bytes).toString('base64'),
+            },
+          ],
           ['note', 'n'],
         ],
       });
     });
 
     // a fetch whose body is still streaming when the first recording stops
-    const streamingAtStop = async (first: Parameters<typeof getRecordNetworkPlugin>[0]) => {
+    const streamingAtStop = async (
+      first: Parameters<typeof getRecordNetworkPlugin>[0],
+    ) => {
       const url = 'https://example.com/sse?token=secret';
       let push!: ReadableStreamDefaultController<Uint8Array>;
-      const stream = new ReadableStream<Uint8Array>({ start: (c) => void (push = c) });
+      const stream = new ReadableStream<Uint8Array>({
+        start: (c) => void (push = c),
+      });
       const win = createMockWindow({
         entries: [createPerformanceEntry(url, 'fetch')],
         fetchImpl: async () => new Response(stream),
       });
       const firstEvents: NetworkData[] = [];
       const plugin = getRecordNetworkPlugin(first);
-      const stop1 = plugin.observer((d: NetworkData) => firstEvents.push(d), win, plugin.options);
+      const stop1 = plugin.observer(
+        (d: NetworkData) => firstEvents.push(d),
+        win,
+        plugin.options,
+      );
       const res = await win.fetch(url);
       const pageRead = res.text();
       push.enqueue(new TextEncoder().encode('event 1\n'));
@@ -475,20 +551,41 @@ describe('rrweb-plugin-network-record', () => {
       const next = (options: Parameters<typeof getRecordNetworkPlugin>[0]) => {
         const p2 = getRecordNetworkPlugin(options);
         const events: NetworkData[] = [];
-        const stop2 = p2.observer((d: NetworkData) => events.push(d), win, p2.options);
+        const stop2 = p2.observer(
+          (d: NetworkData) => events.push(d),
+          win,
+          p2.options,
+        );
         stop2();
         return events;
       };
       return { firstEvents, next };
     };
-    const stripQuery = (r: { name: string }) => ({ ...r, name: r.name.split('?')[0] });
+    const stripQuery = (r: { name: string }) => ({
+      ...r,
+      name: r.name.split('?')[0],
+    });
 
     it('a body still streaming at stop is reported as read so far (partial), the whole body follows to the next recording with the same key', async () => {
-      const { firstEvents, next } = await streamingAtStop({ recordBody: true, initiatorTypes: ['fetch'], carryOverKey: 's1', transformRequestFn: stripQuery });
+      const { firstEvents, next } = await streamingAtStop({
+        recordBody: true,
+        initiatorTypes: ['fetch'],
+        carryOverKey: 's1',
+        transformRequestFn: stripQuery,
+      });
       expect(firstEvents).toHaveLength(1);
-      expect(firstEvents[0].requests[0]).toMatchObject({ name: 'https://example.com/sse', status: 200, responseBody: 'event 1\n', responseBodyPartial: true });
+      expect(firstEvents[0].requests[0]).toMatchObject({
+        name: 'https://example.com/sse',
+        status: 200,
+        responseBody: 'event 1\n',
+        responseBodyPartial: true,
+      });
       // the next recording passes NO transform: the carried request was sanitized by the recording it belongs to
-      const second = next({ recordBody: true, initiatorTypes: ['fetch'], carryOverKey: 's1' });
+      const second = next({
+        recordBody: true,
+        initiatorTypes: ['fetch'],
+        carryOverKey: 's1',
+      });
       expect(second).toHaveLength(1);
       expect(second[0].requests[0].name).toBe('https://example.com/sse');
       expect(second[0].requests[0].responseBody).toBe('event 1\nevent 2\n');
@@ -496,11 +593,26 @@ describe('rrweb-plugin-network-record', () => {
     });
 
     it('a request that completes after stop never moves into a recording with another key, or without one', async () => {
-      const other = await streamingAtStop({ recordBody: true, initiatorTypes: ['fetch'], carryOverKey: 's1' });
-      expect(other.next({ recordBody: true, initiatorTypes: ['fetch'], carryOverKey: 's2' })).toHaveLength(0);
-      const none = await streamingAtStop({ recordBody: true, initiatorTypes: ['fetch'] });
+      const other = await streamingAtStop({
+        recordBody: true,
+        initiatorTypes: ['fetch'],
+        carryOverKey: 's1',
+      });
+      expect(
+        other.next({
+          recordBody: true,
+          initiatorTypes: ['fetch'],
+          carryOverKey: 's2',
+        }),
+      ).toHaveLength(0);
+      const none = await streamingAtStop({
+        recordBody: true,
+        initiatorTypes: ['fetch'],
+      });
       expect(none.firstEvents[0].requests[0].responseBodyPartial).toBe(true);
-      expect(none.next({ recordBody: true, initiatorTypes: ['fetch'] })).toHaveLength(0);
+      expect(
+        none.next({ recordBody: true, initiatorTypes: ['fetch'] }),
+      ).toHaveLength(0);
     });
   });
 });

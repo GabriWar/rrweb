@@ -66,11 +66,15 @@ function viteSvelteDts(): Plugin {
   };
 }
 
-const baseConfig = config(path.resolve(__dirname, 'src/main.ts'), 'rrwebPlayer', {
-  plugins: [viteSvelteDts(), svelte()],
-  // the rrwebPlayer UMD global is the Player constructor (upstream rrweb)
-  umdExport: 'default',
-});
+const baseConfig = config(
+  path.resolve(__dirname, 'src/main.ts'),
+  'rrwebPlayer',
+  {
+    plugins: [viteSvelteDts(), svelte()],
+    // the rrwebPlayer UMD global is the Player constructor (upstream rrweb)
+    umdExport: 'default',
+  },
+);
 
 // Svelte resolves to its browser runtime (mount, lifecycle) in tests and
 // builds, not the server one (upstream rrweb).

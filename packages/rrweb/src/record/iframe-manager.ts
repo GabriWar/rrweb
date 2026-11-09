@@ -12,10 +12,7 @@ import type {
   IWindow,
 } from '@rrweb/types';
 import type { StylesheetManager } from './stylesheet-manager';
-import {
-  getIFrameContentDocument,
-  getIFrameContentWindow,
-} from 'rrdom';
+import { getIFrameContentDocument, getIFrameContentWindow } from 'rrdom';
 import { on } from '../utils';
 
 export interface IframeManagerInterface {

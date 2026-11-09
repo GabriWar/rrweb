@@ -169,9 +169,7 @@ export function fixAllCssProperty(rule: CSSStyleRule) {
       attribute === 'all'
         ? allValue(styleDeclaration)
         : styleDeclaration.getPropertyValue(attribute);
-    styles += `${attribute}:${value}${
-      isImportant ? ` !important` : ''
-    };`;
+    styles += `${attribute}:${value}${isImportant ? ` !important` : ''};`;
   }
 
   return `${rule.selectorText} { ${styles} }`;

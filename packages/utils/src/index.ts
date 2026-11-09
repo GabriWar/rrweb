@@ -193,8 +193,10 @@ type BaseMethod<K extends keyof BasePrototypeCache> = (
 ) => unknown;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const untaintedMethodCache: Record<string, Record<PropertyKey, BaseMethod<any>>> =
-  {};
+const untaintedMethodCache: Record<
+  string,
+  Record<PropertyKey, BaseMethod<any>>
+> = {};
 export function getUntaintedMethod<
   K extends keyof BasePrototypeCache,
   T extends keyof BasePrototypeCache[K],

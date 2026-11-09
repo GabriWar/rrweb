@@ -92,7 +92,9 @@ type ObservedPerformanceEntry = (
  * `name`. Server-Timing names and descriptions are the host's to scrub
  * (transformRequestFn).
  */
-function timingOf(entry: PerformanceEntry): Record<string, unknown> | undefined {
+function timingOf(
+  entry: PerformanceEntry,
+): Record<string, unknown> | undefined {
   try {
     const t = { ...(entry.toJSON() as Record<string, unknown>) };
     delete t.name;
@@ -269,18 +271,19 @@ function readFormData(body: FormData): NetworkBody | Promise<NetworkBody> {
     typeof v !== 'string' && typeof Blob !== 'undefined' && v instanceof Blob;
   if (!entries.some(([, v]) => isFile(v))) return stringifyFormData(body);
   return Promise.all(
-    entries.map(([key, v]): Promise<[string, string | NetworkFormDataFile]> =>
-      isFile(v)
-        ? blobBytes(v).then((b): [string, NetworkFormDataFile] => [
-            key,
-            {
-              name: v.name,
-              type: v.type,
-              size: v.size,
-              base64: toBase64(new Uint8Array(b)),
-            },
-          ])
-        : Promise.resolve([key, String(v)]),
+    entries.map(
+      ([key, v]): Promise<[string, string | NetworkFormDataFile]> =>
+        isFile(v)
+          ? blobBytes(v).then((b): [string, NetworkFormDataFile] => [
+              key,
+              {
+                name: v.name,
+                type: v.type,
+                size: v.size,
+                base64: toBase64(new Uint8Array(b)),
+              },
+            ])
+          : Promise.resolve([key, String(v)]),
     ),
   ).then(
     (formData) => ({ formData }),

@@ -39,14 +39,20 @@ beforeEach(() => {
   g.Worker = FakeWorker;
   g.createImageBitmap = () => Promise.resolve({ close() {} });
   URL.createObjectURL = () => 'blob:worker';
-  Object.defineProperty(navigator, 'hardwareConcurrency', { value: 8, configurable: true });
+  Object.defineProperty(navigator, 'hardwareConcurrency', {
+    value: 8,
+    configurable: true,
+  });
 });
 afterEach(() => {
   const g = globalThis as unknown as Record<string, unknown>;
   g.Worker = saved.Worker;
   g.createImageBitmap = saved.createImageBitmap;
   URL.createObjectURL = saved.url as typeof URL.createObjectURL;
-  Object.defineProperty(navigator, 'hardwareConcurrency', { value: saved.cores, configurable: true });
+  Object.defineProperty(navigator, 'hardwareConcurrency', {
+    value: saved.cores,
+    configurable: true,
+  });
 });
 
 const tick = () => new Promise<void>((r) => setTimeout(r, 0));
@@ -57,12 +63,25 @@ function setup() {
   document.body.innerHTML = '<canvas id="c" width="4" height="4"></canvas>';
   const canvas = document.getElementById('c') as HTMLCanvasElement;
   const mirror = createMirror();
-  mirror.add(canvas, { id: 7, type: 2, tagName: 'canvas', attributes: {}, childNodes: [] } as never);
+  mirror.add(canvas, {
+    id: 7,
+    type: 2,
+    tagName: 'canvas',
+    attributes: {},
+    childNodes: [],
+  } as never);
   const frames: string[] = [];
   const m = new CanvasManager({
     recordCanvas: true,
     enableManualSnapshot: true,
-    mutationCb: (p) => frames.push((p.commands[1].args[0] as { args: Array<{ data: Array<{ base64: string }> }> }).args[0].data[0].base64),
+    mutationCb: (p) =>
+      frames.push(
+        (
+          p.commands[1].args[0] as {
+            args: Array<{ data: Array<{ base64: string }> }>;
+          }
+        ).args[0].data[0].base64,
+      ),
     win: window as never,
     blockClass: 'rr-block',
     blockSelector: null,
@@ -107,7 +126,8 @@ describe('canvas frames: every frame, in order, exact repeats only dropped (item
       await gap();
     }
     await tick();
-    const w = (seq: number) => workers[posts.find((p) => p.data.seq === seq)!.worker];
+    const w = (seq: number) =>
+      workers[posts.find((p) => p.data.seq === seq)!.worker];
     // first frame transparent (nothing to draw, as upstream), then A, A (repeat), B, A, failed
     w(2).answer(reply(2, 'A'));
     w(4).answer(reply(4, 'A'));
@@ -140,13 +160,23 @@ function setupLoop() {
   document.body.innerHTML = '<canvas id="c" width="4" height="4"></canvas>';
   const canvas = document.getElementById('c') as HTMLCanvasElement;
   const mirror = createMirror();
-  mirror.add(canvas, { id: 7, type: 2, tagName: 'canvas', attributes: {}, childNodes: [] } as never);
+  mirror.add(canvas, {
+    id: 7,
+    type: 2,
+    tagName: 'canvas',
+    attributes: {},
+    childNodes: [],
+  } as never);
   const frames: Array<{ base64: string; at?: number }> = [];
   const m = new CanvasManager({
     recordCanvas: true,
     mutationCb: (p, at) =>
       frames.push({
-        base64: (p.commands[1].args[0] as { args: Array<{ data: Array<{ base64: string }> }> }).args[0].data[0].base64,
+        base64: (
+          p.commands[1].args[0] as {
+            args: Array<{ data: Array<{ base64: string }> }>;
+          }
+        ).args[0].data[0].base64,
         at,
       }),
     win: window as never,
@@ -167,10 +197,16 @@ function setupLoop() {
 }
 
 const seqPosts = () => posts.filter((p) => p.data.seq !== undefined);
-const answerAll = (base64: (seq: number) => string, hash?: (seq: number) => string) => {
+const answerAll = (
+  base64: (seq: number) => string,
+  hash?: (seq: number) => string,
+) => {
   for (const p of seqPosts().splice(0)) {
     const seq = p.data.seq!;
-    workers[p.worker].answer({ ...reply(seq, base64(seq)), ...(hash ? { hash: hash(seq) } : {}) });
+    workers[p.worker].answer({
+      ...reply(seq, base64(seq)),
+      ...(hash ? { hash: hash(seq) } : {}),
+    });
   }
   posts = posts.filter((p) => p.data.seq === undefined);
 };
@@ -244,14 +280,24 @@ describe('canvas frames: read only when changed, bounded in flight, stamped when
     try {
       await new Promise((r) => setTimeout(r, 60));
       // different bytes in the test stand-in, same hash: the hash decides
-      answerAll((s) => `P${s}`, () => 'H1');
+      answerAll(
+        (s) => `P${s}`,
+        () => 'H1',
+      );
       expect(frames).toHaveLength(1);
-      const f = (m as unknown as { frames: Map<number, { last: string }> }).frames.get(7)!;
+      const f = (
+        m as unknown as { frames: Map<number, { last: string }> }
+      ).frames.get(7)!;
       expect(f.last).toBe('H1');
       canvas.remove();
-      answerAll(() => 'Q', () => 'H2');
+      answerAll(
+        () => 'Q',
+        () => 'H2',
+      );
       await new Promise((r) => setTimeout(r, 40));
-      expect((m as unknown as { frames: Map<number, unknown> }).frames.has(7)).toBe(false);
+      expect(
+        (m as unknown as { frames: Map<number, unknown> }).frames.has(7),
+      ).toBe(false);
     } finally {
       restore();
     }
@@ -273,7 +319,13 @@ function setupGl(preserve: boolean, canvasAttrs = '') {
   document.body.innerHTML = `<canvas id="c" width="4" height="4" ${canvasAttrs}></canvas>`;
   const canvas = document.getElementById('c') as HTMLCanvasElement;
   const mirror = createMirror();
-  mirror.add(canvas, { id: 7, type: 2, tagName: 'canvas', attributes: {}, childNodes: [] } as never);
+  mirror.add(canvas, {
+    id: 7,
+    type: 2,
+    tagName: 'canvas',
+    attributes: {},
+    childNodes: [],
+  } as never);
   const m = new CanvasManager({
     recordCanvas: true,
     mutationCb: () => undefined,

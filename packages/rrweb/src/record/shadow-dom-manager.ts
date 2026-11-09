@@ -14,10 +14,7 @@ import { inDom, setTimeout } from '../utils';
 import type { Mirror } from 'rrweb-snapshot';
 import { isNativeShadowDom } from 'rrweb-snapshot';
 import dom, { patch } from '@rrweb/utils';
-import {
-  getIFrameContentDocument,
-  getIFrameContentWindow,
-} from 'rrdom';
+import { getIFrameContentDocument, getIFrameContentWindow } from 'rrdom';
 
 type BypassOptions = Omit<
   MutationBufferParam,

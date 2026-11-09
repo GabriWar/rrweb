@@ -25,9 +25,11 @@ function values(events: eventWithTime[]) {
     )
       continue;
     const d = e.data as mutationData;
-    for (const a of d.attributes) out.push(`attr ${JSON.stringify(a.attributes)}`);
+    for (const a of d.attributes)
+      out.push(`attr ${JSON.stringify(a.attributes)}`);
     for (const t of d.texts) out.push(`text ${t.value}`);
-    for (const a of d.adds) out.push(`add ${JSON.stringify(a.node).slice(0, 60)}`);
+    for (const a of d.adds)
+      out.push(`add ${JSON.stringify(a.node).slice(0, 60)}`);
     for (const r of d.removes) out.push(`rm ${r.id}`);
   }
   return out;
@@ -39,14 +41,22 @@ async function recordWith(
 ) {
   document.body.innerHTML =
     '<div id="a" class="s0">x</div><ul id="l">' +
-    Array.from({ length: 300 }, (_, i) => `<li id="i${i}">item ${i}</li>`).join('') +
+    Array.from({ length: 300 }, (_, i) => `<li id="i${i}">item ${i}</li>`).join(
+      '',
+    ) +
     '</ul>';
   cleanupSnapshot();
   const events: eventWithTime[] = [];
-  const stop = record({ emit: (e) => events.push(e as eventWithTime), ...opts })!;
+  const stop = record({
+    emit: (e) => events.push(e as eventWithTime),
+    ...opts,
+  })!;
   await during();
   const deadline = Date.now() + 10_000;
-  while (!events.some((e) => e.type === EventType.FullSnapshot) && Date.now() < deadline) {
+  while (
+    !events.some((e) => e.type === EventType.FullSnapshot) &&
+    Date.now() < deadline
+  ) {
     await new Promise((r) => setTimeout(r, 10));
   }
   await frame();
@@ -73,9 +83,16 @@ async function intermediateValues() {
 describe('loss audit (Panopticon item 8)', () => {
   it('coalesceMutations drops values an element held between two MutationObserver callbacks of one frame', async () => {
     const plain = values(await recordWith({}, intermediateValues));
-    const coalesced = values(await recordWith({ coalesceMutations: true }, intermediateValues));
+    const coalesced = values(
+      await recordWith({ coalesceMutations: true }, intermediateValues),
+    );
     // the unoptimized recorder emits every callback: s1, then s2 + y, then z
-    expect(plain).toEqual(['attr {"class":"s1"}', 'attr {"class":"s2"}', 'text y', 'text z']);
+    expect(plain).toEqual([
+      'attr {"class":"s1"}',
+      'attr {"class":"s2"}',
+      'text y',
+      'text z',
+    ]);
     // per frame, the attribute map keeps the last value only: s1 is gone
     expect(coalesced).not.toContain('attr {"class":"s1"}');
     expect(coalesced.length).toBeLessThan(plain.length);
@@ -89,7 +106,8 @@ describe('loss audit (Panopticon item 8)', () => {
     };
     const sync = await recordWith({}, removeLate);
     const sliced = await recordWith({ snapshotSliceMs: 0.001 }, removeLate);
-    const full = (evs: eventWithTime[]) => JSON.stringify(evs.find((e) => e.type === EventType.FullSnapshot)!.data);
+    const full = (evs: eventWithTime[]) =>
+      JSON.stringify(evs.find((e) => e.type === EventType.FullSnapshot)!.data);
     // synchronous: i299 is in the FullSnapshot, then its removal follows
     expect(full(sync)).toContain('"i299"');
     expect(values(sync).some((v) => v.startsWith('rm '))).toBe(true);
@@ -100,13 +118,20 @@ describe('loss audit (Panopticon item 8)', () => {
 
   it('with both options at their defaults the stream is the unoptimized one, value for value', async () => {
     const a = values(await recordWith({}, intermediateValues));
-    const b = values(await recordWith({ coalesceMutations: false, snapshotSliceMs: 0 }, intermediateValues));
+    const b = values(
+      await recordWith(
+        { coalesceMutations: false, snapshotSliceMs: 0 },
+        intermediateValues,
+      ),
+    );
     expect(b).toEqual(a);
   });
 
   it('a sliced snapshot keeps every value of the changes made while it walks, each with its own callback', async () => {
     const a = values(await recordWith({}, intermediateValues));
-    const b = values(await recordWith({ snapshotSliceMs: 0.001 }, intermediateValues));
+    const b = values(
+      await recordWith({ snapshotSliceMs: 0.001 }, intermediateValues),
+    );
     expect(b).toEqual(a);
   });
 });

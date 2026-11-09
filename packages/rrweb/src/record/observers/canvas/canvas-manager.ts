@@ -435,7 +435,8 @@ export class CanvasManager implements CanvasManagerInterface {
       // the encoder must keep up with every frame: more workers where the
       // device has the cores (they run beside the page, not on its thread)
       const cores =
-        (typeof navigator !== 'undefined' && navigator.hardwareConcurrency) || 2;
+        (typeof navigator !== 'undefined' && navigator.hardwareConcurrency) ||
+        2;
       const extra = Math.min(2, Math.max(0, cores - 2));
       for (let i = 1; i <= extra; i++) {
         this.pool.push(this.initFPSWorker(i));
@@ -563,7 +564,8 @@ export class CanvasManager implements CanvasManagerInterface {
       return;
     }
     const { id } = data;
-    if (data.seq !== undefined) return this.onSequencedFrame(id, data.seq, data);
+    if (data.seq !== undefined)
+      return this.onSequencedFrame(id, data.seq, data);
     this.snapshotInProgressMap.set(id, false);
 
     if (!('base64' in data)) return;

@@ -4,6 +4,7 @@ import type {
   IWindow,
   NetworkBody,
   NetworkData,
+  NetworkFormDataFile,
   NetworkHeaders,
   NetworkInitiatorType,
   NetworkRecordOptions,
@@ -256,6 +257,37 @@ function isReadableStreamBody(
   );
 }
 
+/**
+ * Panopticon item 8: a FormData holding a file keeps every entry in order,
+ * each file with its name, type, size and bytes (base64); one of strings
+ * only stays its urlencoded text, as before.
+ */
+function readFormData(body: FormData): NetworkBody | Promise<NetworkBody> {
+  const entries: Array<[string, FormDataEntryValue]> = [];
+  body.forEach((value, key) => entries.push([key, value]));
+  const isFile = (v: FormDataEntryValue): v is File =>
+    typeof v !== 'string' && typeof Blob !== 'undefined' && v instanceof Blob;
+  if (!entries.some(([, v]) => isFile(v))) return stringifyFormData(body);
+  return Promise.all(
+    entries.map(([key, v]): Promise<[string, string | NetworkFormDataFile]> =>
+      isFile(v)
+        ? blobBytes(v).then((b): [string, NetworkFormDataFile] => [
+            key,
+            {
+              name: v.name,
+              type: v.type,
+              size: v.size,
+              base64: toBase64(new Uint8Array(b)),
+            },
+          ])
+        : Promise.resolve([key, String(v)]),
+    ),
+  ).then(
+    (formData) => ({ formData }),
+    (error: unknown) => `[rrweb/network] Failed to read body: ${String(error)}`,
+  );
+}
+
 function stringifyFormData(body: FormData) {
   const searchParams = new URLSearchParams();
   body.forEach((value, key) => {
@@ -288,13 +320,39 @@ function bytesToBody(bytes: Uint8Array): NetworkBody {
       // not UTF-8: base64 below
     }
   }
+  return { base64: toBase64(bytes) };
+}
+
+function toBase64(bytes: Uint8Array): string {
   let s = '';
   for (let i = 0; i < bytes.length; i += 0x8000)
     s += String.fromCharCode.apply(
       null,
       bytes.subarray(i, i + 0x8000) as unknown as number[],
     );
-  return { base64: btoa(s) };
+  return btoa(s);
+}
+
+/**
+ * Panopticon item 8: a Document as markup (its textContent dropped every
+ * tag and attribute): XML documents through XMLSerializer, HTML documents
+ * as their children's HTML (doctype, comments, the root element).
+ */
+function serializeDocument(doc: Document): string | null {
+  try {
+    const html = /html/i.test(doc.contentType || 'text/html');
+    if (!html && typeof XMLSerializer !== 'undefined')
+      return new XMLSerializer().serializeToString(doc);
+    let s = '';
+    doc.childNodes.forEach((n) => {
+      if (n.nodeType === 10) s += `<!DOCTYPE ${(n as DocumentType).name}>`;
+      else if (n.nodeType === 8) s += `<!--${n.nodeValue ?? ''}-->`;
+      else if (n.nodeType === 1) s += (n as Element).outerHTML;
+    });
+    return s;
+  } catch {
+    return doc.textContent;
+  }
 }
 
 function blobBytes(blob: Blob): Promise<ArrayBuffer> {
@@ -327,10 +385,10 @@ function readXhrBody(
     return body.toString();
   }
   if (typeof FormData !== 'undefined' && body instanceof FormData) {
-    return stringifyFormData(body);
+    return readFormData(body);
   }
   if (typeof Document !== 'undefined' && body instanceof Document) {
-    return body.textContent;
+    return serializeDocument(body);
   }
   if (typeof Blob !== 'undefined' && body instanceof Blob) {
     return readBlob(body);
@@ -367,6 +425,50 @@ function readFetchBody(
   return copy.arrayBuffer().then(
     (b) => bytesToBody(new Uint8Array(b)),
     (error: unknown) => `[rrweb/network] Failed to read body: ${String(error)}`,
+  );
+}
+
+function concatBytes(chunks: Uint8Array[]): Uint8Array {
+  if (chunks.length === 1) return chunks[0];
+  let n = 0;
+  for (const c of chunks) n += c.length;
+  const out = new Uint8Array(n);
+  let o = 0;
+  for (const c of chunks) {
+    out.set(c, o);
+    o += c.length;
+  }
+  return out;
+}
+
+/**
+ * A response body read chunk by chunk into `chunks` (Panopticon item 8:
+ * what was read so far is there when the recording stops mid-stream). A
+ * read that fails after some bytes keeps them.
+ */
+function readResponseBody(
+  res: Response,
+  chunks: Uint8Array[],
+): Promise<NetworkBody> {
+  let copy: Response;
+  try {
+    copy = res.clone();
+  } catch {
+    return Promise.resolve('[rrweb/network] Failed to read body');
+  }
+  const body = copy.body;
+  if (!body || typeof body.getReader !== 'function') return readFetchBody(copy);
+  const reader = body.getReader();
+  const pump = (): Promise<NetworkBody> =>
+    reader.read().then(({ done, value }) => {
+      if (done) return bytesToBody(concatBytes(chunks));
+      if (value) chunks.push(value);
+      return pump();
+    });
+  return pump().catch((error: unknown) =>
+    chunks.length
+      ? bytesToBody(concatBytes(chunks))
+      : `[rrweb/network] Failed to read body: ${String(error)}`,
   );
 }
 
@@ -558,6 +660,8 @@ function initFetchObserver(
     'response',
     options.recordHeaders,
   );
+  // response bodies still being read: reported partially at stop
+  const reading = new Set<() => void>();
   const restorePatch = patch(win, 'fetch', ((originalFetch: typeof fetch) => {
     return async function (
       url: URL | RequestInfo,
@@ -604,8 +708,23 @@ function initFetchObserver(
         if (
           shouldRecordBody('response', options.recordBody, responseHeaders, url)
         ) {
+          const chunks: Uint8Array[] = [];
+          const status = res.status;
+          const partial = () =>
+            cb({
+              requests: [
+                {
+                  ...prepareRequestWithoutPerformance(req, networkRequest)[0],
+                  status,
+                  responseBody: bytesToBody(concatBytes(chunks)),
+                  responseBodyPartial: true,
+                },
+              ],
+            });
+          reading.add(partial);
           reads.push(
-            readFetchBody(res).then((b) => {
+            readResponseBody(res, chunks).then((b) => {
+              reading.delete(partial);
               networkRequest.responseBody = b;
             }),
           );
@@ -642,9 +761,21 @@ function initFetchObserver(
     };
   }) as (...args: unknown[]) => unknown);
   return () => {
+    // a body still streaming: what was read so far, marked partial; the
+    // whole body follows when it ends (initNetworkObserver routes it)
+    for (const partial of [...reading]) partial();
+    reading.clear();
     restorePatch();
   };
 }
+
+/**
+ * Panopticon item 8: a request that completes after its recording stopped
+ * (a body still streaming at stop) goes to the recording running on that
+ * window then, or waits for the next one.
+ */
+const activeCallbacks = new WeakMap<object, networkCallback>();
+const carried = new WeakMap<object, NetworkData[]>();
 
 function initNetworkObserver(
   callback: networkCallback,
@@ -673,6 +804,21 @@ function initNetworkObserver(
     }
     benchEnd(benchStart);
   };
+  let stopped = false;
+  const deliver: networkCallback = (data) => {
+    if (!stopped) return cb(data);
+    const next = activeCallbacks.get(win);
+    if (next) return next(data);
+    const q = carried.get(win) || [];
+    q.push(data);
+    carried.set(win, q);
+  };
+  activeCallbacks.set(win, cb);
+  const late = carried.get(win);
+  if (late) {
+    carried.delete(win);
+    late.forEach(cb);
+  }
   const performanceObserver = initPerformanceObserver(cb, win, networkOptions);
   let xhrObserver: listenerHandler = () => {
     //
@@ -681,13 +827,15 @@ function initNetworkObserver(
     //
   };
   if (networkOptions.recordHeaders || networkOptions.recordBody) {
-    xhrObserver = initXhrObserver(cb, win, networkOptions);
-    fetchObserver = initFetchObserver(cb, win, networkOptions);
+    xhrObserver = initXhrObserver(deliver, win, networkOptions);
+    fetchObserver = initFetchObserver(deliver, win, networkOptions);
   }
   return () => {
     performanceObserver();
     xhrObserver();
     fetchObserver();
+    stopped = true;
+    if (activeCallbacks.get(win) === cb) activeCallbacks.delete(win);
   };
 }
 

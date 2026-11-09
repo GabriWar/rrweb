@@ -99,8 +99,26 @@ export type NetworkHeaders = Record<string, string>;
  * Panopticon item 8: a body whose bytes are not valid UTF-8, byte for byte.
  */
 export type NetworkBinaryBody = { base64: string };
+/** Panopticon item 8: a FormData file entry, its bytes in full. */
+export type NetworkFormDataFile = {
+  name: string;
+  type: string;
+  size: number;
+  base64: string;
+};
+/**
+ * Panopticon item 8: a FormData body holding a file, entry by entry in
+ * order (a FormData of strings only stays its urlencoded text).
+ */
+export type NetworkFormDataBody = {
+  formData: Array<[string, string | NetworkFormDataFile]>;
+};
 /** Text when the bytes are valid UTF-8 (exactly those bytes), else base64. */
-export type NetworkBody = string | NetworkBinaryBody | null;
+export type NetworkBody =
+  | string
+  | NetworkBinaryBody
+  | NetworkFormDataBody
+  | null;
 
 export type NetworkRequest = Omit<
   PerformanceEntry,
@@ -117,6 +135,13 @@ export type NetworkRequest = Omit<
   requestBody?: NetworkBody;
   responseHeaders?: NetworkHeaders;
   responseBody?: NetworkBody;
+  /**
+   * Panopticon item 8: the response body was still being read when the
+   * recording stopped; responseBody holds the bytes read until then. The
+   * whole body follows in a later report of the same request (to the
+   * recording running then) once it ends.
+   */
+  responseBodyPartial?: boolean;
   isInitial?: boolean;
   /**
    * Panopticon: the PerformanceResourceTiming / NavigationTiming entry as

@@ -394,4 +394,91 @@ describe('rrweb-plugin-network-record', () => {
       expect(r.requestBody).toEqual({ base64: b64(binary) });
     });
   });
+
+  describe('no body lost: documents, files, streams open at stop (Panopticon item 8)', () => {
+    const xhrOf = (win: MockWindow) =>
+      new win.XMLHttpRequest() as unknown as {
+        open: (m: string, u: string) => void;
+        send: (b: unknown) => void;
+        complete: () => void;
+        response: unknown;
+      };
+
+    it('an XHR Document body keeps its markup, HTML and XML', async () => {
+      const url = 'https://example.com/doc';
+      const win = createMockWindow({ entries: [createPerformanceEntry(url, 'xmlhttprequest')] });
+      const events: NetworkData[] = [];
+      const plugin = getRecordNetworkPlugin({ recordBody: true, initiatorTypes: ['xmlhttprequest'] });
+      const cleanup = plugin.observer((d: NetworkData) => events.push(d), win, plugin.options);
+      const html = new DOMParser().parseFromString('<!DOCTYPE html><html><body><p class="a" data-x="1">hi <b>there</b></p><!--c--></body></html>', 'text/html');
+      const xml = new DOMParser().parseFromString('<root a="1"><item id="i">t</item></root>', 'application/xml');
+      const xhr = xhrOf(win);
+      xhr.open('POST', url);
+      xhr.send(xml);
+      xhr.response = html;
+      xhr.complete();
+      await settle();
+      cleanup();
+      const r = events[0].requests[0];
+      expect(r.responseBody).toBe('<!DOCTYPE html><html><head></head><body><p class="a" data-x="1">hi <b>there</b></p><!--c--></body></html>');
+      expect(r.requestBody).toBe('<root a="1"><item id="i">t</item></root>');
+    });
+
+    it('a FormData file is recorded with its name, type, size and bytes, entries in order', async () => {
+      const url = 'https://example.com/upload';
+      const win = createMockWindow({ entries: [createPerformanceEntry(url, 'xmlhttprequest')] });
+      const events: NetworkData[] = [];
+      const plugin = getRecordNetworkPlugin({ recordBody: true, initiatorTypes: ['xmlhttprequest'] });
+      const cleanup = plugin.observer((d: NetworkData) => events.push(d), win, plugin.options);
+      const bytes = new Uint8Array([0, 255, 1, 128]);
+      const fd = new FormData();
+      fd.append('title', 'report');
+      fd.append('file', new File([bytes], 'r.bin', { type: 'application/octet-stream' }));
+      fd.append('note', 'n');
+      const xhr = xhrOf(win);
+      xhr.open('POST', url);
+      xhr.send(fd);
+      xhr.complete();
+      await settle();
+      cleanup();
+      expect(events[0].requests[0].requestBody).toEqual({
+        formData: [
+          ['title', 'report'],
+          ['file', { name: 'r.bin', type: 'application/octet-stream', size: 4, base64: Buffer.from(bytes).toString('base64') }],
+          ['note', 'n'],
+        ],
+      });
+    });
+
+    it('a body still streaming at stop is reported as read so far (partial), the whole body follows to the next recording', async () => {
+      const url = 'https://example.com/sse';
+      let push!: ReadableStreamDefaultController<Uint8Array>;
+      const stream = new ReadableStream<Uint8Array>({ start: (c) => void (push = c) });
+      const win = createMockWindow({
+        entries: [createPerformanceEntry(url, 'fetch')],
+        fetchImpl: async () => new Response(stream),
+      });
+      const first: NetworkData[] = [];
+      const plugin = getRecordNetworkPlugin({ recordBody: true, initiatorTypes: ['fetch'] });
+      const stop1 = plugin.observer((d: NetworkData) => first.push(d), win, plugin.options);
+      const res = await win.fetch(url);
+      const pageRead = res.text();
+      push.enqueue(new TextEncoder().encode('event 1\n'));
+      await settle();
+      stop1();
+      expect(first).toHaveLength(1);
+      expect(first[0].requests[0]).toMatchObject({ name: url, status: 200, responseBody: 'event 1\n', responseBodyPartial: true });
+      // ends while no recording runs: kept for the next one on this window
+      push.enqueue(new TextEncoder().encode('event 2\n'));
+      push.close();
+      expect(await pageRead).toBe('event 1\nevent 2\n');
+      await settle();
+      const second: NetworkData[] = [];
+      const stop2 = plugin.observer((d: NetworkData) => second.push(d), win, plugin.options);
+      expect(second).toHaveLength(1);
+      expect(second[0].requests[0].responseBody).toBe('event 1\nevent 2\n');
+      expect(second[0].requests[0].responseBodyPartial).toBeUndefined();
+      stop2();
+    });
+  });
 });

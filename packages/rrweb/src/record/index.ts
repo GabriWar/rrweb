@@ -301,13 +301,18 @@ function record<T = eventWithTime>(
   // (observers, snapshot load hooks, a sliced snapshot still walking) may
   // emit or serialize after stop().
   let stopped = false;
+  // Panopticon item 8: while stop() runs the observers' cleanup, plugins
+  // still report what they hold (a response body still streaming)
+  let closingPlugins = false;
+  const closed = (type: EventType) =>
+    stopped && !(closingPlugins && type === EventType.Plugin);
 
   wrappedEmit = (
     r: eventWithoutTime,
     isCheckout?: boolean,
     timestamp?: number,
   ) => {
-    if (stopped) return;
+    if (closed(r.type)) return;
     // Mutations buffered for this frame go out before anything recorded
     // after them (coalesceMutations); the flush re-enters with its own event.
     if (hasCoalescedMutations()) flushCoalescedMutations();
@@ -323,7 +328,7 @@ function record<T = eventWithTime>(
   };
 
   const dispatch = (e: eventWithTime, isCheckout?: boolean) => {
-    if (stopped) return;
+    if (closed(e.type)) return;
     if (
       e.type !== EventType.FullSnapshot &&
       !(
@@ -1187,6 +1192,7 @@ function record<T = eventWithTime>(
       stopped = true;
       setAssetHook(null);
       setAssetDeferral(false, true);
+      closingPlugins = true;
       [...handlers, ...iframeObservers.values()].forEach((handler) => {
         try {
           handler();
@@ -1206,6 +1212,7 @@ function record<T = eventWithTime>(
           }
         }
       });
+      closingPlugins = false;
       iframeObservers.clear();
       iframeManager.destroy();
       processedNodeManager.destroy();

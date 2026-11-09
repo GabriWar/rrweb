@@ -450,35 +450,57 @@ describe('rrweb-plugin-network-record', () => {
       });
     });
 
-    it('a body still streaming at stop is reported as read so far (partial), the whole body follows to the next recording', async () => {
-      const url = 'https://example.com/sse';
+    // a fetch whose body is still streaming when the first recording stops
+    const streamingAtStop = async (first: Parameters<typeof getRecordNetworkPlugin>[0]) => {
+      const url = 'https://example.com/sse?token=secret';
       let push!: ReadableStreamDefaultController<Uint8Array>;
       const stream = new ReadableStream<Uint8Array>({ start: (c) => void (push = c) });
       const win = createMockWindow({
         entries: [createPerformanceEntry(url, 'fetch')],
         fetchImpl: async () => new Response(stream),
       });
-      const first: NetworkData[] = [];
-      const plugin = getRecordNetworkPlugin({ recordBody: true, initiatorTypes: ['fetch'] });
-      const stop1 = plugin.observer((d: NetworkData) => first.push(d), win, plugin.options);
+      const firstEvents: NetworkData[] = [];
+      const plugin = getRecordNetworkPlugin(first);
+      const stop1 = plugin.observer((d: NetworkData) => firstEvents.push(d), win, plugin.options);
       const res = await win.fetch(url);
       const pageRead = res.text();
       push.enqueue(new TextEncoder().encode('event 1\n'));
       await settle();
       stop1();
-      expect(first).toHaveLength(1);
-      expect(first[0].requests[0]).toMatchObject({ name: url, status: 200, responseBody: 'event 1\n', responseBodyPartial: true });
-      // ends while no recording runs: kept for the next one on this window
+      // ends while no recording runs
       push.enqueue(new TextEncoder().encode('event 2\n'));
       push.close();
       expect(await pageRead).toBe('event 1\nevent 2\n');
       await settle();
-      const second: NetworkData[] = [];
-      const stop2 = plugin.observer((d: NetworkData) => second.push(d), win, plugin.options);
+      const next = (options: Parameters<typeof getRecordNetworkPlugin>[0]) => {
+        const p2 = getRecordNetworkPlugin(options);
+        const events: NetworkData[] = [];
+        const stop2 = p2.observer((d: NetworkData) => events.push(d), win, p2.options);
+        stop2();
+        return events;
+      };
+      return { firstEvents, next };
+    };
+    const stripQuery = (r: { name: string }) => ({ ...r, name: r.name.split('?')[0] });
+
+    it('a body still streaming at stop is reported as read so far (partial), the whole body follows to the next recording with the same key', async () => {
+      const { firstEvents, next } = await streamingAtStop({ recordBody: true, initiatorTypes: ['fetch'], carryOverKey: 's1', transformRequestFn: stripQuery });
+      expect(firstEvents).toHaveLength(1);
+      expect(firstEvents[0].requests[0]).toMatchObject({ name: 'https://example.com/sse', status: 200, responseBody: 'event 1\n', responseBodyPartial: true });
+      // the next recording passes NO transform: the carried request was sanitized by the recording it belongs to
+      const second = next({ recordBody: true, initiatorTypes: ['fetch'], carryOverKey: 's1' });
       expect(second).toHaveLength(1);
+      expect(second[0].requests[0].name).toBe('https://example.com/sse');
       expect(second[0].requests[0].responseBody).toBe('event 1\nevent 2\n');
       expect(second[0].requests[0].responseBodyPartial).toBeUndefined();
-      stop2();
+    });
+
+    it('a request that completes after stop never moves into a recording with another key, or without one', async () => {
+      const other = await streamingAtStop({ recordBody: true, initiatorTypes: ['fetch'], carryOverKey: 's1' });
+      expect(other.next({ recordBody: true, initiatorTypes: ['fetch'], carryOverKey: 's2' })).toHaveLength(0);
+      const none = await streamingAtStop({ recordBody: true, initiatorTypes: ['fetch'] });
+      expect(none.firstEvents[0].requests[0].responseBodyPartial).toBe(true);
+      expect(none.next({ recordBody: true, initiatorTypes: ['fetch'] })).toHaveLength(0);
     });
   });
 });

@@ -164,6 +164,13 @@ export type NetworkRecordOptions = {
     | string[]
     | { request: boolean | string[]; response: boolean | string[] };
   recordInitialRequests?: boolean;
+  /**
+   * A request still in flight when this recording stops is handed to the
+   * next recording on the same window only when both pass the same
+   * non-empty key (for example the replay session id); otherwise it is
+   * dropped. Already sanitized with this recording's transformRequestFn.
+   */
+  carryOverKey?: string;
 };
 
 export type NetworkEvent = pluginEvent<NetworkData>;

@@ -771,11 +771,16 @@ function initFetchObserver(
 
 /**
  * Panopticon item 8: a request that completes after its recording stopped
- * (a body still streaming at stop) goes to the recording running on that
- * window then, or waits for the next one.
+ * (a body still streaming at stop; its partial body was reported at stop)
+ * is sanitized with the transformRequestFn of the recording it belongs to,
+ * then goes to the recording running on that window, or waits for the next
+ * one, ONLY when that recording has the same non-empty carryOverKey (the
+ * same replay session and config). Without a key, or with another key, it
+ * is dropped: data never moves into a recording it was not recorded for.
  */
-const activeCallbacks = new WeakMap<object, networkCallback>();
-const carried = new WeakMap<object, NetworkData[]>();
+type ActiveRecording = { key: string; emit: networkCallback };
+const activeCallbacks = new WeakMap<object, ActiveRecording>();
+const carried = new WeakMap<object, { key: string; data: NetworkData }[]>();
 
 function initNetworkObserver(
   callback: networkCallback,
@@ -793,31 +798,43 @@ function initNetworkObserver(
       : defaultNetworkOptions
   ) as Required<NetworkRecordOptions>;
 
+  const sanitize = (data: NetworkData): NetworkData => ({
+    ...data,
+    requests: data.requests
+      .map((request) => networkOptions.transformRequestFn(request))
+      .filter(Boolean) as NetworkRequest[],
+  });
+  // already-sanitized data, from this recording or carried over
+  const emit: networkCallback = (data) => {
+    if (data.requests.length > 0 || data.isInitial) callback(data);
+  };
   const cb: networkCallback = (data) => {
     const benchStart = benchNow();
-    const requests = data.requests
-      .map((request) => networkOptions.transformRequestFn(request))
-      .filter(Boolean) as NetworkRequest[];
-
-    if (requests.length > 0 || data.isInitial) {
-      callback({ ...data, requests });
-    }
+    emit(sanitize(data));
     benchEnd(benchStart);
   };
+  const key = networkOptions.carryOverKey || '';
   let stopped = false;
   const deliver: networkCallback = (data) => {
     if (!stopped) return cb(data);
+    if (!key) return;
+    const clean = sanitize(data);
+    if (clean.requests.length === 0) return;
     const next = activeCallbacks.get(win);
-    if (next) return next(data);
+    if (next) {
+      if (next.key === key) next.emit(clean);
+      return;
+    }
     const q = carried.get(win) || [];
-    q.push(data);
+    q.push({ key, data: clean });
     carried.set(win, q);
   };
-  activeCallbacks.set(win, cb);
+  const self: ActiveRecording = { key, emit };
+  activeCallbacks.set(win, self);
   const late = carried.get(win);
   if (late) {
     carried.delete(win);
-    late.forEach(cb);
+    if (key) for (const entry of late) if (entry.key === key) emit(entry.data);
   }
   const performanceObserver = initPerformanceObserver(cb, win, networkOptions);
   let xhrObserver: listenerHandler = () => {
@@ -835,7 +852,7 @@ function initNetworkObserver(
     xhrObserver();
     fetchObserver();
     stopped = true;
-    if (activeCallbacks.get(win) === cb) activeCallbacks.delete(win);
+    if (activeCallbacks.get(win) === self) activeCallbacks.delete(win);
   };
 }
 
